@@ -2,6 +2,13 @@
 name = "diff-wasm"
 version = "0.1.0"
 edition = "2021"
+description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI and RubyGems, as a WebAssembly module."
+repository = "https://github.com/philfreshman/diffpack-engine"
+
+# wasm-pack copies these into the generated `pkg/package.json`, which is what
+# is published to npm as `@philfreshman/diff-wasm`. The crate version above is
+# the single source of truth for the npm version too: a release is a bump here
+# plus a matching `v*` tag, and `release.yml` checks the two agree.
 
 [lib]
 crate-type = ["cdylib", "rlib"]

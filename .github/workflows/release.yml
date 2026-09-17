@@ -1,0 +1,96 @@
+name: Release
+
+# A release is a `v*` tag. The version itself lives in `Cargo.toml` — wasm-pack
+# copies it into the generated `pkg/package.json`, which is what npm publishes —
+# so the tag is a trigger and a cross-check, never the source of truth.
+#
+#   1. bump `version` in Cargo.toml (and `cargo check` so Cargo.lock follows)
+#   2. merge that to `main`
+#   3. `git tag v0.1.1 && git push origin v0.1.1`
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Required for npm provenance: the publish is signed with a short-lived
+      # OIDC token, and npm shows the commit and workflow it was built from.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      # npm's own auth and provenance need a recent npm; the runner's bundled
+      # Node is fine, but this is also where `NODE_AUTH_TOKEN` gets wired to
+      # the registry.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # A tag that disagrees with Cargo.toml publishes a version nobody asked
+      # for, under a git ref that does not describe it. Cheapest possible check,
+      # and it runs before anything is built.
+      - name: Tag must match the crate version
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$crate" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $tag, Cargo.toml says $crate. Bump one of them."
+            exit 1
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+        id: version
+
+      # The same command `ci.yml` runs on every PR, so nothing about the build
+      # is first attempted on a tag.
+      - name: wasm-pack build
+        run: wasm-pack build --release --target web --scope philfreshman
+
+      # wasm-pack writes a `pkg/.gitignore` of `*`. An explicit `files` list in
+      # the generated `package.json` currently outranks it — `npm pack` on this
+      # tree yields the four intended files — but the two disagree, and the day
+      # that precedence changes or `files` is dropped, the package publishes
+      # empty rather than failing. Removing the file settles it.
+      - name: Drop wasm-pack's pkg/.gitignore
+        run: rm -f pkg/.gitignore
+
+      # What is about to be published, on the run page, before it is published.
+      - name: Show the tarball
+        run: npm pack --dry-run
+        working-directory: pkg
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        working-directory: pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            pkg/diff_wasm_bg.wasm

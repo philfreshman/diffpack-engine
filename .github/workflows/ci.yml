@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A force-push or a second commit makes the run in flight irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # `cargo fmt --check` needs no compile at all, so a formatting failure is
+  # reported in seconds rather than after the crate and its dependency tree
+  # have been built. `--all` covers `examples/` and `tests/` as well as `src/`.
+  #
+  # When this fails: `cargo fmt --all`, and commit.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # The unit tests over the engine: extraction, path normalisation, the URL
+  # builders, rename detection, the tree's statuses and counts, and the
+  # serialised shape TypeScript reads. They compile for the host rather than
+  # for `wasm32`, so they need no browser and no wasm build. `examples/bench.rs`
+  # carries its own tests too (`test = true` in `Cargo.toml`), which is why
+  # this is not `--lib`.
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  # The `#[wasm_bindgen]` entry points, which the host-side tests above cannot
+  # reach: constructing a `JsValue` off `wasm32` aborts the process. This is
+  # `tests/web.rs` under `wasm-pack test`, in a real headless Chrome, against
+  # real crates.io archives.
+  #
+  # It matters more here than it did in diffpack, where these signatures were
+  # covered incidentally by the Playwright suite on every PR. Now that the app
+  # consumes a published version, this job is the last thing between a broken
+  # binding and a release.
+  browser:
+    name: wasm-pack test (chrome)
+    runs-on: ubuntu-latest
+    # It downloads and diffs real archives from crates.io.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - run: wasm-pack test --headless --chrome
+
+  # Builds exactly what `release.yml` publishes, so a PR that breaks the
+  # wasm32 build or the generated bindings fails here rather than on a tag.
+  # The artifact is uploaded so the output of a PR can be inspected — and,
+  # in diffpack, linked against before the version is cut.
+  build:
+    name: wasm-pack build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - name: wasm-pack build
+        run: wasm-pack build --release --target web --scope philfreshman
+
+      # The module size is a standing concern — the release profile in
+      # `Cargo.toml` documents a 515 KB → 587 KB trade that bought a 2x
+      # speedup. Printing it on every run is what makes an accidental
+      # regression visible without anyone going looking.
+      - name: Report module size
+        run: |
+          {
+            echo '## Module size'
+            echo ''
+            echo "| file | raw | gzip |"
+            echo "| --- | --- | --- |"
+            raw=$(du -h pkg/diff_wasm_bg.wasm | cut -f1)
+            gz=$(gzip -c pkg/diff_wasm_bg.wasm | wc -c | awk '{printf "%.0fK", $1/1024}')
+            echo "| diff_wasm_bg.wasm | $raw | $gz |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: pkg
+          path: pkg/
+          retention-days: 7
