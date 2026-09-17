@@ -1,9 +1,14 @@
 [package]
 name = "diff-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI and RubyGems, as a WebAssembly module."
-repository = "https://github.com/philfreshman/diffpack-engine"
+# `git+https://` and the `.git` suffix rather than the plain URL Cargo would
+# normally carry. This field is read by npm, not crates.io — wasm-pack copies
+# it into the generated `pkg/package.json` — and npm rewrote it to this form on
+# every publish, warning each time. The crate is not published to crates.io, so
+# npm's spelling is the only one that has a reader.
+repository = "git+https://github.com/philfreshman/diffpack-engine.git"
 
 # wasm-pack copies these into the generated `pkg/package.json`, which is what
 # is published to npm as `@philfreshman/diff-wasm`. The crate version above is
