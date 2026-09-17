@@ -1,14 +1,22 @@
 {
 	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
-	"extends": ["config:recommended"],
-	"schedule": ["before 5am on the 1st and 15th day of the month"],
+	"extends": [
+		"config:recommended"
+	],
+	"schedule": [
+		"before 5am on the 1st and 15th day of the month"
+	],
 	"automerge": true,
 	"automergeType": "pr",
 	"platformAutomerge": true,
 	"packageRules": [
 		{
-			"labels": ["dependency-update"],
-			"matchPackageNames": ["*"]
+			"labels": [
+				"dependency-update"
+			],
+			"matchPackageNames": [
+				"*"
+			]
 		},
 		{
 			"description": "wasm-bindgen and its satellites are version-locked against each other and against the wasm-bindgen CLI wasm-pack runs; bumping one alone produces a module that fails to instantiate.",
@@ -25,6 +33,22 @@
 	],
 	"lockFileMaintenance": {
 		"enabled": true,
-		"schedule": ["before 5am on the 1st day of the month"]
-	}
+		"schedule": [
+			"before 5am on the 1st day of the month"
+		]
+	},
+	"customManagers": [
+		{
+			"description": "WASM_PACK_VERSION is pinned in the workflows because wasm-pack decides the generated bindings. A pin nobody updates is how it ends up back on `latest`, so Renovate owns it.",
+			"customType": "regex",
+			"managerFilePatterns": [
+				"/^\\.github/workflows/[^/]+\\.ya?ml$/"
+			],
+			"matchStrings": [
+				"WASM_PACK_VERSION:\\s*(?<currentValue>v[\\d.]+)"
+			],
+			"depNameTemplate": "rustwasm/wasm-pack",
+			"datasourceTemplate": "github-releases"
+		}
+	]
 }
