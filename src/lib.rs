@@ -2,13 +2,27 @@ mod core;
 mod package;
 mod types;
 
-// The native surface `examples/bench.rs` drives: extraction and the tree
-// builder without a fetch in front of them. Nothing here reaches JS — only
-// the `#[wasm_bindgen]` functions below do.
-pub use crate::core::build_diff_tree;
-pub use crate::package::extract_archive_bytes;
+// The crate's native surface: the pieces a Rust dependent links against
+// directly, without a browser or a `fetch` in front of them. `examples/bench.rs`
+// drives extraction and the tree builder through it, and so does
+// `diffpack-server`, which computes diffs with this crate as a Cargo
+// dependency. Nothing here reaches JS — only the `#[wasm_bindgen]` functions
+// below do. `tests/public_api.rs` links the crate the way a dependent does and
+// is what holds this list in place.
+pub use crate::core::{build_diff_tree, get_diff_content, whitespace_mode};
+pub use crate::package::{
+    build_go_zip_url, build_tarball_url, escape_go_module_path, extract_archive_bytes,
+    select_pypi_sdist_url, strip_go_module_root, PyPiResponse, PyPiUrl,
+};
 pub use crate::types::{DiffFileEntry, DiffStatus, FileMapEntry, FileType};
 use serde::Serialize;
+/// `similar`'s own type, which [`whitespace_mode`] returns — so it is part of
+/// this crate's surface whether or not it is named here.
+///
+/// Supported API, re-exported so a dependent takes the type from us rather than
+/// from a `similar` of its own, where a version that resolved differently would
+/// be a different type — the drift `whitespace_mode` exists to prevent.
+pub use similar::WhitespaceMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
