@@ -23,6 +23,27 @@ Extraction is cached per `registry:package:version` for the session and shared b
 A→B then B→C fetches B once. `build_diff_tree_for_package` is the call that establishes which pair
 `get_diff_for_path` reads.
 
+## The sibling repositories
+
+Three repositories carry diffpack, and they are meant to be checked out side by side under one
+parent directory — the layout the app's `DIFFPACK_ENGINE_LOCAL=../diffpack-engine/pkg` assumes:
+
+| Repo | Sibling path | Remote | What it is |
+| --- | --- | --- | --- |
+| diffpack | `../diffpack` | `philfreshman/diffpack` | The web app at [diffpack.io](https://www.diffpack.io) — TanStack Start, the UI, the registry search, the worker that calls the three functions above. It consumes the published npm package and never builds this crate. |
+| diffpack-engine | *this checkout* | `philfreshman/diffpack-engine` | This crate. |
+| diffpack-server | `../diffpack-server` | `philfreshman/diffpack-server` | Empty so far — one commit, a one-line README. Nothing here or in the app depends on it. |
+
+To try a change in the app before releasing it, build here and point the app at `pkg/`:
+
+```bash
+wasm-pack build --release --target web --scope philfreshman
+cd ../diffpack && DIFFPACK_ENGINE_LOCAL=../diffpack-engine/pkg bun run dev
+```
+
+Anything short of that — a released version, or nothing at all — means the app is running the
+pinned `@philfreshman/diffpack-engine` from npm, not what is in this working tree.
+
 ## Working on it
 
 Needs a Rust toolchain with the `wasm32-unknown-unknown` target, and
