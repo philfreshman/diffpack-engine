@@ -6,6 +6,10 @@ use std::collections::{HashMap, HashSet};
 /// line-ending character disregarded. There is no third choice on offer,
 /// because `-b` still reads `x=1` and `x = 1` as different lines, which is the
 /// very change a reformatted codebase is made of.
+///
+/// Supported API: `diffpack-server` configures its own `TextDiff` with this,
+/// so the two sides cannot drift on what `ignore_whitespace` means. The
+/// returned type is re-exported from the crate root as `WhitespaceMode`.
 pub fn whitespace_mode(ignore_whitespace: bool) -> WhitespaceMode {
     if ignore_whitespace {
         WhitespaceMode::IgnoreAll
@@ -20,6 +24,13 @@ pub fn whitespace_mode(ignore_whitespace: bool) -> WhitespaceMode {
 /// viewer and the tree now count the same lines — splitting on `\n` gave the
 /// viewer one phantom blank line at the end of every file that the tree never
 /// saw.
+///
+/// Supported API, and the one whose *output* is the contract rather than just
+/// its signature: a `--- from/{filename}` / `+++ to/{filename}` header, then
+/// one line per change as sign (`-`, `+` or a space), a space, and the line
+/// with any trailing `\n` removed. `diffpack-server` renders file views from
+/// this, and the tree's counts come from the same lines, so a byte that moves
+/// here makes the two disagree. `tests/public_api.rs` pins the format.
 pub fn get_diff_content(
     filename: &str,
     from_content: &str,
