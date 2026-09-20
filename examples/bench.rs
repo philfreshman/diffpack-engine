@@ -24,7 +24,7 @@ use std::hash::{Hash, Hasher};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use diff_wasm::{build_diff_tree, extract_archive_bytes, DiffFileEntry, FileType};
+use diffpack_engine::{build_diff_tree, extract_archive_bytes, DiffFileEntry, FileType};
 
 /// What `diff.worker.ts` passes; the tree must be the one the page sees.
 const SIMILARITY_THRESHOLD: f64 = 0.75;
@@ -196,7 +196,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diff_wasm::DiffStatus;
+    use diffpack_engine::DiffStatus;
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_string()).collect()

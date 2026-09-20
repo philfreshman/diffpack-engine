@@ -1,6 +1,6 @@
 [package]
-name = "diff-wasm"
-version = "0.1.1"
+name = "diffpack-engine"
+version = "0.2.0"
 edition = "2021"
 description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI and RubyGems, as a WebAssembly module."
 # `git+https://` and the `.git` suffix rather than the plain URL Cargo would
@@ -11,8 +11,9 @@ description = "Fetches, extracts and diffs package archives from crates.io, npm,
 repository = "git+https://github.com/philfreshman/diffpack-engine.git"
 
 # wasm-pack copies these into the generated `pkg/package.json`, which is what
-# is published to npm as `@philfreshman/diff-wasm`. The crate version above is
-# the single source of truth for the npm version too: a release is a bump here
+# is published to npm as `@philfreshman/diffpack-engine`. The crate version
+# above is the single source of truth for the npm version too: a release is a
+# bump here
 # plus a matching `v*` tag, and `release.yml` checks the two agree.
 
 [lib]

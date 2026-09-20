@@ -1,4 +1,4 @@
-use diff_wasm::build_diff_tree_for_package;
+use diffpack_engine::build_diff_tree_for_package;
 use serde::Deserialize;
 use wasm_bindgen_test::*;
 

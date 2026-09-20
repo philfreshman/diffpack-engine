@@ -4,7 +4,7 @@ The Rust engine behind [diffpack.io](https://www.diffpack.io): it fetches a pack
 crates.io, npm, PyPI or RubyGems, extracts it in memory, diffs two versions, and hands the browser
 a tree it can render.
 
-Published to npm as **[`@philfreshman/diff-wasm`](https://www.npmjs.com/package/@philfreshman/diff-wasm)**,
+Published to npm as **[`@philfreshman/diffpack-engine`](https://www.npmjs.com/package/@philfreshman/diffpack-engine)**,
 a `wasm-pack --target web` module. The app consumes that published version; it does not build this
 crate. This repo was split out of [`philfreshman/diffpack`](https://github.com/philfreshman/diffpack)
 with its history intact.
@@ -77,5 +77,5 @@ The version in `Cargo.toml` is the single source of truth — wasm-pack copies i
 3. `git tag v0.1.1 && git push origin v0.1.1`.
 
 `release.yml` refuses a tag that disagrees with `Cargo.toml`, builds, and publishes with npm
-provenance. Then bump `@philfreshman/diff-wasm` in diffpack — or let Renovate open that PR, where
-the full end-to-end suite runs against the new module.
+provenance. Then bump `@philfreshman/diffpack-engine` in diffpack — or let Renovate open that
+PR, where the full end-to-end suite runs against the new module.

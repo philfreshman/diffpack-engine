@@ -43,8 +43,8 @@ pub struct DiffFileEntry {
 }
 
 /// The tree these types serialise to is read by TypeScript, against the
-/// checked-in declaration in `wasm/diff-wasm/types/`. The names and the
-/// omissions below are that contract; a rename here is a breaking change on
+/// `.d.ts` wasm-bindgen generates into `pkg/` and npm publishes. The names and
+/// the omissions below are that contract; a rename here is a breaking change on
 /// the other side, so it is pinned rather than left to the derive.
 #[cfg(test)]
 mod tests {

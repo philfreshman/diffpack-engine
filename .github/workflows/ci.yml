@@ -18,9 +18,10 @@ env:
   # Pinned, not `latest`. wasm-pack carries the wasm-bindgen CLI that generates
   # the JS glue, so its version is part of the module's output: v0.1.1 built
   # here at 0.15.0 is 595,134 bytes where a 0.14.0 build of the same commit is
-  # 591,273, with a correspondingly different `diff_wasm.js`. Left floating, a
-  # future release picks up a new wasm-pack and ships a materially different
-  # module with nothing in the repo to explain it. Bump this deliberately.
+  # 591,273, with a correspondingly different `diffpack_engine.js`. Left
+  # floating, a future release picks up a new wasm-pack and ships a materially
+  # different module with nothing in the repo to explain it. Bump this
+  # deliberately.
   WASM_PACK_VERSION: v0.15.0
 
 jobs:
@@ -110,9 +111,9 @@ jobs:
             echo ''
             echo "| file | raw | gzip |"
             echo "| --- | --- | --- |"
-            raw=$(du -h pkg/diff_wasm_bg.wasm | cut -f1)
-            gz=$(gzip -c pkg/diff_wasm_bg.wasm | wc -c | awk '{printf "%.0fK", $1/1024}')
-            echo "| diff_wasm_bg.wasm | $raw | $gz |"
+            raw=$(du -h pkg/diffpack_engine_bg.wasm | cut -f1)
+            gz=$(gzip -c pkg/diffpack_engine_bg.wasm | wc -c | awk '{printf "%.0fK", $1/1024}')
+            echo "| diffpack_engine_bg.wasm | $raw | $gz |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v6
