@@ -1,10 +1,14 @@
 name: CI
 
+# `dev` is the integration branch: feature PRs target it, and `main` takes a
+# single `dev` -> `main` PR per release. Both branches are listed on both
+# events, so the suite gates every PR and runs again on the merge commit each
+# branch ends up with — including the `main` one a `v*` tag is cut from.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
 
 # A force-push or a second commit makes the run in flight irrelevant.
 concurrency:
@@ -44,8 +48,9 @@ jobs:
   # builders, rename detection, the tree's statuses and counts, and the
   # serialised shape TypeScript reads. They compile for the host rather than
   # for `wasm32`, so they need no browser and no wasm build. `examples/bench.rs`
-  # carries its own tests too (`test = true` in `Cargo.toml`), which is why
-  # this is not `--lib`.
+  # carries its own tests too (`test = true` in `Cargo.toml`), and
+  # `tests/public_api.rs` links the crate as a dependent does to hold the Rust
+  # surface in place — which is why this is not `--lib`.
   test:
     name: cargo test
     runs-on: ubuntu-latest

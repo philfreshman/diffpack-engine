@@ -13,15 +13,26 @@ use zip::ZipArchive;
 
 use crate::types::{FileMapEntry, FileType};
 
+/// What `pypi.org/pypi/{pkg}/{version}/json` answers, reduced to the field
+/// that decides which archive to fetch. Every other key in that payload is
+/// ignored, so the shape survives PyPI adding to it.
+///
+/// Supported API: `diffpack-server` parses PyPI metadata into this and hands
+/// `urls` to [`select_pypi_sdist_url`].
 #[derive(Deserialize)]
-struct PyPiResponse {
-    urls: Vec<PyPiUrl>,
+pub struct PyPiResponse {
+    pub urls: Vec<PyPiUrl>,
 }
 
+/// One downloadable artifact for a version. `packagetype` is PyPI's own
+/// vocabulary — `sdist` for a source distribution, `bdist_wheel` for a wheel —
+/// and is compared as PyPI spells it.
+///
+/// Supported API: the element type of [`select_pypi_sdist_url`]'s argument.
 #[derive(Deserialize)]
-struct PyPiUrl {
-    url: String,
-    packagetype: String,
+pub struct PyPiUrl {
+    pub url: String,
+    pub packagetype: String,
 }
 
 pub async fn fetch_and_extract_package(
@@ -50,7 +61,10 @@ pub async fn fetch_and_extract_package(
 /// The module proxy serves lower-cased paths, escaping each uppercase letter as
 /// `!` followed by its lowercase form, so `Masterminds` becomes `!masterminds`.
 /// Requesting the unescaped path is a 404.
-fn escape_go_module_path(pkg: &str) -> String {
+///
+/// Supported API: exposed for `diffpack-server`, which does not fetch Go
+/// modules yet. [`build_go_zip_url`] is the usual way in.
+pub fn escape_go_module_path(pkg: &str) -> String {
     let mut escaped = String::with_capacity(pkg.len());
     for ch in pkg.chars() {
         if ch.is_ascii_uppercase() {
@@ -63,7 +77,13 @@ fn escape_go_module_path(pkg: &str) -> String {
     escaped
 }
 
-fn build_go_zip_url(pkg: &str, version: &str) -> String {
+/// The proxy's zip for one module version. There is no registry lookup in
+/// front of it: the path is the module's own, escaped by
+/// [`escape_go_module_path`], and the version is Go's `v`-prefixed spelling.
+///
+/// Supported API: exposed for `diffpack-server`, which does not fetch Go
+/// modules yet.
+pub fn build_go_zip_url(pkg: &str, version: &str) -> String {
     format!(
         "https://proxy.golang.org/{}/@v/{version}.zip",
         escape_go_module_path(pkg)
@@ -76,7 +96,14 @@ fn build_go_zip_url(pkg: &str, version: &str) -> String {
 /// spans several components (`github.com/sirupsen/logrus@v1.9.3/`), which is why
 /// `strip_common_root` cannot do the job. Entry names keep the module's real
 /// casing, so the unescaped path is the one to strip.
-fn strip_go_module_root(
+///
+/// Falls back to stripping whatever single top-level directory the archive has
+/// when that prefix is absent, so a zip that does not follow the convention is
+/// still usable. Directories a surviving path implies are put back.
+///
+/// Supported API: exposed for `diffpack-server`, which does not fetch Go
+/// modules yet. Takes the map [`extract_archive_bytes`] produces.
+pub fn strip_go_module_root(
     files: HashMap<String, FileMapEntry>,
     pkg: &str,
     version: &str,
@@ -99,7 +126,14 @@ fn strip_go_module_root(
     stripped
 }
 
-fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<String, String> {
+/// The archive URL for one version, for the registries that serve one at a
+/// predictable path. npm repeats the name after `/-/` without its scope, so
+/// `@types/node` is served from `/@types/node/-/node-20.1.0.tgz`. PyPI is not
+/// here: its artifact URL is only discoverable from the metadata endpoint, and
+/// `select_pypi_sdist_url` is the half of that this crate can settle.
+///
+/// Supported API: `diffpack-server` builds fetch URLs with this.
+pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<String, String> {
     match registry {
         "npm" => {
             let unscoped = pkg.split('/').nth(1).unwrap_or(pkg);
@@ -152,7 +186,17 @@ async fn fetch_pypi_sdist_bytes(pkg: &str, version: &str) -> Result<Vec<u8>, JsV
     fetch_bytes(&sdist_url).await
 }
 
-fn select_pypi_sdist_url(urls: &[PyPiUrl]) -> Result<String, String> {
+/// The artifact to diff, in preference order: a source distribution this crate
+/// can open, else a wheel it can open, else either of them in a format it
+/// cannot — a `.tar.bz2` sdist is still a better answer than none, and the
+/// extractor reports its own failure. A version with no artifacts at all is an
+/// error.
+///
+/// Wheels are built, not sources, so an sdist is preferred wherever one exists.
+///
+/// Supported API: `diffpack-server` picks PyPI archives with this rather than
+/// repeating the order.
+pub fn select_pypi_sdist_url(urls: &[PyPiUrl]) -> Result<String, String> {
     let mut sdist_supported = None;
     let mut sdist_fallback = None;
     let mut wheel_supported = None;
