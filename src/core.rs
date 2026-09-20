@@ -87,7 +87,7 @@ impl<'a> DiffTreeBuilder<'a> {
             to_file_paths: Self::collect_file_paths(to_files),
             from_dirs: Self::collect_directories(from_files),
             to_dirs: Self::collect_directories(to_files),
-            similarity_threshold: similarity_threshold.max(0.0).min(1.0),
+            similarity_threshold: similarity_threshold.clamp(0.0, 1.0),
             ignore_whitespace,
         }
     }
@@ -240,7 +240,7 @@ impl<'a> DiffTreeBuilder<'a> {
                 }
             }
 
-            let add_name = add_path.split('/').last().unwrap_or("");
+            let add_name = add_path.split('/').next_back().unwrap_or("");
             let mut best: Option<(usize, f64)> = None;
 
             for &i in &touched {
@@ -274,7 +274,7 @@ impl<'a> DiffTreeBuilder<'a> {
                 };
                 let similarity = self.calculate_similarity(del_content, add_content);
 
-                let del_name = del_path.split('/').last().unwrap_or("");
+                let del_name = del_path.split('/').next_back().unwrap_or("");
                 let adjusted = if add_name == del_name {
                     similarity * 1.2
                 } else {
@@ -367,7 +367,7 @@ impl<'a> DiffTreeBuilder<'a> {
             if path == "/" || renamed_away.contains(path) {
                 continue;
             }
-            let file_type = self.resolve_file_type(path, from_dirs, to_dirs);
+            let file_type = self.resolve_file_type(path);
 
             nodes.insert(
                 path.clone(),
@@ -383,10 +383,7 @@ impl<'a> DiffTreeBuilder<'a> {
             );
 
             let parent = Self::parent_path(path);
-            children_map
-                .entry(parent)
-                .or_insert_with(Vec::new)
-                .push(path.clone());
+            children_map.entry(parent).or_default().push(path.clone());
         }
 
         let mut root = DiffFileEntry {
@@ -505,8 +502,8 @@ impl<'a> DiffTreeBuilder<'a> {
                     node.old_path = Some(old_path.clone());
 
                     // Calculate diff stats
-                    let from_content = self.file_content(&self.from_files, old_path);
-                    let to_content = self.file_content(&self.to_files, &node.path);
+                    let from_content = self.file_content(self.from_files, old_path);
+                    let to_content = self.file_content(self.to_files, &node.path);
 
                     if let (Some(from), Some(to)) = (from_content, to_content) {
                         let (added, removed) = self.count_diff(from, to);
@@ -516,8 +513,8 @@ impl<'a> DiffTreeBuilder<'a> {
                     }
                 }
 
-                let from_content = self.file_content(&self.from_files, &node.path);
-                let to_content = self.file_content(&self.to_files, &node.path);
+                let from_content = self.file_content(self.from_files, &node.path);
+                let to_content = self.file_content(self.to_files, &node.path);
 
                 match (from_content, to_content) {
                     (Some(from), Some(to)) => {
@@ -641,12 +638,11 @@ impl<'a> DiffTreeBuilder<'a> {
             .collect()
     }
 
-    fn resolve_file_type(
-        &self,
-        path: &str,
-        from_dirs: &HashSet<String>,
-        to_dirs: &HashSet<String>,
-    ) -> FileType {
+    // Takes no directory sets: a path neither file map carries can only be an
+    // interior node of the tree, and the only interior nodes are directories.
+    // The `from_dirs`/`to_dirs` this used to consult agreed with that fallback
+    // on both arms, so they told it nothing.
+    fn resolve_file_type(&self, path: &str) -> FileType {
         if let Some(entry) = self
             .from_files
             .get(path)
@@ -655,11 +651,7 @@ impl<'a> DiffTreeBuilder<'a> {
             return entry.file_type.clone();
         }
 
-        if from_dirs.contains(path) || to_dirs.contains(path) {
-            FileType::Directory
-        } else {
-            FileType::Directory
-        }
+        FileType::Directory
     }
 
     fn file_content<'m>(
@@ -1194,24 +1186,11 @@ mod tests {
         let from = HashMap::from([("a.rs".to_string(), file("x"))]);
         let to = HashMap::from([("docs".to_string(), dir()), ("b.rs".to_string(), file("y"))]);
         let b = DiffTreeBuilder::new(&from, &to, 0.75, false);
-        let no_dirs = HashSet::new();
 
-        assert!(matches!(
-            b.resolve_file_type("a.rs", &no_dirs, &no_dirs),
-            FileType::File
-        ));
-        assert!(matches!(
-            b.resolve_file_type("b.rs", &no_dirs, &no_dirs),
-            FileType::File
-        ));
-        assert!(matches!(
-            b.resolve_file_type("docs", &no_dirs, &no_dirs),
-            FileType::Directory
-        ));
-        assert!(matches!(
-            b.resolve_file_type("src", &no_dirs, &no_dirs),
-            FileType::Directory
-        ));
+        assert!(matches!(b.resolve_file_type("a.rs"), FileType::File));
+        assert!(matches!(b.resolve_file_type("b.rs"), FileType::File));
+        assert!(matches!(b.resolve_file_type("docs"), FileType::Directory));
+        assert!(matches!(b.resolve_file_type("src"), FileType::Directory));
     }
 
     /// A directory has no content to diff, so it must not answer with the
