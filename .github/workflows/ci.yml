@@ -1,10 +1,14 @@
 name: CI
 
+# `dev` is the integration branch: feature PRs target it, and `main` takes a
+# single `dev` -> `main` PR per release. Both branches are listed on both
+# events, so the suite gates every PR and runs again on the merge commit each
+# branch ends up with — including the `main` one a `v*` tag is cut from.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
 
 # A force-push or a second commit makes the run in flight irrelevant.
 concurrency:
