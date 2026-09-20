@@ -677,6 +677,8 @@ impl<'a> DiffTreeBuilder<'a> {
     }
 }
 
+/// Supported API: the door to the tree builder. `DiffTreeBuilder` itself stays
+/// private — a consumer gets the tree, not the machinery that assembles it.
 pub fn build_diff_tree(
     from_files: &HashMap<String, FileMapEntry>,
     to_files: &HashMap<String, FileMapEntry>,

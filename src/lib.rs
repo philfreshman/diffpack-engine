@@ -16,11 +16,12 @@ pub use crate::package::{
 };
 pub use crate::types::{DiffFileEntry, DiffStatus, FileMapEntry, FileType};
 use serde::Serialize;
-// `whitespace_mode` returns one of these, so the type is part of this crate's
-// surface whether or not it is named here. Re-exported so a dependent takes it
-// from us rather than from its own `similar`, where a version that resolved
-// differently would be a different type — and the drift this function exists
-// to prevent.
+/// `similar`'s own type, which [`whitespace_mode`] returns — so it is part of
+/// this crate's surface whether or not it is named here.
+///
+/// Supported API, re-exported so a dependent takes the type from us rather than
+/// from a `similar` of its own, where a version that resolved differently would
+/// be a different type — the drift `whitespace_mode` exists to prevent.
 pub use similar::WhitespaceMode;
 use std::cell::RefCell;
 use std::collections::HashMap;

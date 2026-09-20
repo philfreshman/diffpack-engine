@@ -35,11 +35,6 @@ zip = { version = "8.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
-# `tests/public_api.rs` parses a PyPI metadata payload into the crate's own
-# `PyPiResponse`, which is how a dependent reaches `select_pypi_sdist_url`.
-# Listed again here because an integration test is its own crate and does not
-# inherit the dependencies above.
-serde_json = "1.0"
 
 # `cargo test` builds every example but runs an example's own tests only when
 # it is told to. `bench` carries the arg grammar and the tree fingerprint the

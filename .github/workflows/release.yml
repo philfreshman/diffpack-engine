@@ -5,8 +5,8 @@ name: Release
 # so the tag is a trigger and a cross-check, never the source of truth.
 #
 #   1. bump `version` in Cargo.toml (and `cargo check` so Cargo.lock follows)
-#   2. merge that to `main`
-#   3. `git tag v0.1.1 && git push origin v0.1.1`
+#   2. merge that to `dev`, then open and merge `dev` -> `main`
+#   3. on `main`: `git tag v0.3.0 && git push origin v0.3.0`
 on:
   push:
     tags: ["v*"]
