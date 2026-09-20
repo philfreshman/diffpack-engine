@@ -77,12 +77,46 @@ Needs a Rust toolchain with the `wasm32-unknown-unknown` target, and
 
 ```bash
 cargo test                                              # the host-side suite
-cargo fmt --all                                         # what CI checks
+.githooks/pre-commit                                    # the four gates CI runs
 wasm-pack build --release --target web --scope philfreshman
 ```
 
 The build writes `pkg/`, which is gitignored: it is generated on every build and published from CI,
 never committed.
+
+### Checks
+
+Four gates, run by `.githooks/pre-commit` before every commit and again by `ci.yml` on every PR.
+Same commands in both places, so a commit that passes locally fails CI only if the RustSec advisory
+database moved in between.
+
+```bash
+cargo fmt --all --check                                   # formatting
+cargo clippy --all-targets --all-features -- -D warnings  # lints
+cargo deny --all-features check                           # licences, advisories, sources
+cargo audit --deny warnings --no-yanked                   # advisories, unmaintained, unsound
+```
+
+The hook is per-clone and off until you turn it on:
+
+```bash
+rustup component add clippy
+cargo install --locked cargo-deny cargo-audit
+git config core.hooksPath .githooks
+```
+
+It takes about two seconds on a warm cache. `git commit --no-verify`, or `SKIP_PRECOMMIT=1`, skips
+it; CI does not.
+
+`deny.toml` is the supply-chain policy: permissive licences only, no git dependencies, no registry
+but crates.io, yanked crates denied. It matters more than it would in an application — this crate
+ships as a wasm module inside somebody else's bundle, and Renovate automerges dependency PRs, so
+these two jobs are what an automerge has to get past.
+
+`cargo audit` overlaps `cargo deny check advisories`; it is kept because it is the one with
+`--deny warnings`, which fails on unmaintained and unsound crates too. `--no-yanked` is not a
+weakening — `deny.toml` denies yanked crates — it is there because cargo-audit's own yanked check
+updates the git crates.io index, which measured 17 minutes against 0.7s without it.
 
 ### Tests
 

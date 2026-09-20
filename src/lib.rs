@@ -44,7 +44,7 @@ struct ActiveDiff {
 thread_local! {
     static EXTRACTION_CACHE: RefCell<HashMap<String, PackageFiles>> =
         RefCell::new(HashMap::new());
-    static ACTIVE_DIFF: RefCell<Option<ActiveDiff>> = RefCell::new(None);
+    static ACTIVE_DIFF: RefCell<Option<ActiveDiff>> = const { RefCell::new(None) };
 }
 
 fn cache_key(registry: &str, pkg: &str, version: &str) -> String {

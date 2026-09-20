@@ -10,6 +10,12 @@ description = "Fetches, extracts and diffs package archives from crates.io, npm,
 # npm's spelling is the only one that has a reader.
 repository = "git+https://github.com/philfreshman/diffpack-engine.git"
 
+# The crate is published to npm by `release.yml`, never to crates.io. Saying so
+# makes `cargo publish` refuse, and lets `cargo deny` treat this crate as
+# private — without it, deny fails the licence check on the one crate in the
+# graph that carries no `license` field.
+publish = false
+
 # wasm-pack copies these into the generated `pkg/package.json`, which is what
 # is published to npm as `@philfreshman/diffpack-engine`. The crate version
 # above is the single source of truth for the npm version too: a release is a
