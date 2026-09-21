@@ -1,5 +1,10 @@
 {
 	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"description": [
+		"Dependency updates run unattended: Renovate opens the PR, CI gates it, GitHub merges it. `ci.yml` (rustfmt, clippy, cargo deny, cargo audit, cargo test, wasm-pack build, wasm-pack test) is what stands between an automerge and a bad dependency, so every one of those jobs is a required check on `development`.",
+		"The Cargo ranges in Cargo.toml are minimums ('1.0', '0.4'), so the cargo manager's default rangeStrategy resolves to update-lockfile: most crate updates change Cargo.lock only. That is the intended shape — the manifest says what the crate needs, the lock says what it was built and tested against — but it means the PR diff is usually a lock file, and the CI jobs above are what actually read it.",
+		"Updates are held for three days after release (`minimumReleaseAge`). This crate is published to npm as a wasm module, so a dependency that lands here ends up inside bundles other people ship; three days is the window in which a compromised or broken release is normally yanked."
+	],
 	"extends": [
 		"config:recommended"
 	],
@@ -9,6 +14,18 @@
 	"automerge": true,
 	"automergeType": "pr",
 	"platformAutomerge": true,
+	"minimumReleaseAge": "3 days",
+	"prBodyColumns": [
+		"Checklist",
+		"Package",
+		"Diffpack",
+		"Age",
+		"Confidence"
+	],
+	"prBodyDefinitions": {
+		"Checklist": "- [ ]",
+		"Diffpack": "{{#if (equals datasource 'crate')}}[{{{currentVersion}}} → {{{newVersion}}}](https://diffpack.io/crates/{{{depName}}}/{{{currentVersion}}}/{{{newVersion}}}){{else}}—{{/if}}"
+	},
 	"packageRules": [
 		{
 			"labels": [
@@ -29,6 +46,19 @@
 				"web-sys",
 				"serde-wasm-bindgen"
 			]
+		},
+		{
+			"description": "A wasm-pack bump changes the generated JS glue and the module's bytes, which is the one dependency update that should be looked at rather than merged on a green suite. Same for the wasm-bindgen family it is locked against: `wasm-pack test --headless --chrome` can pass on a pair that still misbehaves in a consumer's bundler.",
+			"matchPackageNames": [
+				"rustwasm/wasm-pack",
+				"wasm-bindgen",
+				"wasm-bindgen-futures",
+				"wasm-bindgen-test",
+				"js-sys",
+				"web-sys",
+				"serde-wasm-bindgen"
+			],
+			"automerge": false
 		}
 	],
 	"lockFileMaintenance": {

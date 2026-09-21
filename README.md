@@ -118,6 +118,37 @@ these two jobs are what an automerge has to get past.
 weakening — `deny.toml` denies yanked crates — it is there because cargo-audit's own yanked check
 updates the git crates.io index, which measured 17 minutes against 0.7s without it.
 
+### Dependencies
+
+Crate updates are Renovate's job, not anyone's. `renovate.json` has it read `Cargo.toml` and
+`Cargo.lock` twice a month, open one PR per crate, and let GitHub merge each one the moment the
+suite above goes green — no review, no queue. A full `Cargo.lock` refresh runs on the 1st.
+
+Cargo ranges here are minimums (`"1.0"`, `"0.4"`), so most of those PRs change `Cargo.lock` and
+nothing else. That is the intended split: the manifest says what the crate needs, the lock says what
+it was built and tested against. It does mean the diff is rarely readable on its own — the four
+checks are what actually read it, which is why all seven CI jobs are required checks on
+`development`. A PR whose checks cannot run is a PR that never merges.
+
+Two things are deliberately not automerged:
+
+- **wasm-pack and the wasm-bindgen family.** Both decide the generated JS glue and the module's
+  bytes, and the two are version-locked against each other. `wasm-pack test --headless --chrome` can
+  pass on a pair that still fails in a consumer's bundler, so these get looked at. The wasm-bindgen
+  crates arrive as one grouped PR; `WASM_PACK_VERSION`, pinned in both workflows, is picked up by a
+  custom manager so the pin cannot quietly rot.
+- **Anything less than three days old** (`minimumReleaseAge`). This crate ends up inside other
+  people's bundles, and three days is the window in which a compromised or broken release is
+  normally yanked.
+
+Every PR body carries a Diffpack link per crate — `currentVersion → newVersion`, pointing at
+diffpack.io — so the actual contents of an update are one click from the PR. That is the same
+`prBodyDefinitions` trick diffpack uses on its own npm dependencies.
+
+Renovate itself is the Mend GitHub App, enabled per repository at
+<https://github.com/apps/renovate>. Nothing in this repo turns it on; if no dependency PRs and no
+Dependency Dashboard issue ever appear, the app has not been given access to it.
+
 ### Tests
 
 `cargo test` compiles for the host and covers everything the module is built out of — extraction,
@@ -159,11 +190,11 @@ The version in `Cargo.toml` is the single source of truth — wasm-pack copies i
 `pkg/package.json`, which is what npm publishes. A release is:
 
 1. Bump `version` in `Cargo.toml`, and `cargo check` so `Cargo.lock` follows.
-2. Merge the work to `dev`, then open `dev` → `main` and merge that.
+2. Merge the work to `development`, then open `development` → `main` and merge that.
 3. `git tag v0.3.0 && git push origin v0.3.0`, on `main`.
 
-`dev` is the integration branch: feature branches target it, and `main` only
-ever takes a `dev` → `main` PR. `ci.yml` runs on PRs into either and on the
+`development` is the integration branch: feature branches target it, and `main`
+only ever takes a `development` → `main` PR. `ci.yml` runs on PRs into either and on the
 merge commit each ends up with, so the commit a tag is cut from has been
 through the suite twice. `release.yml` is the only thing keyed to the tag.
 
