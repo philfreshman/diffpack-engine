@@ -1,14 +1,20 @@
 name: CI
 
-# `dev` is the integration branch: feature PRs target it, and `main` takes a
-# single `dev` -> `main` PR per release. Both branches are listed on both
-# events, so the suite gates every PR and runs again on the merge commit each
-# branch ends up with — including the `main` one a `v*` tag is cut from.
+# `development` is the integration branch: feature PRs target it, and `main`
+# takes a single `development` -> `main` PR per release. Both branches are
+# listed on both events, so the suite gates every PR and runs again on the
+# merge commit each branch ends up with — including the `main` one a `v*` tag
+# is cut from.
+#
+# These names are load-bearing twice over: every job below is a required check
+# on `development`, and Renovate's automerge waits on them. A branch that is
+# not listed here reports no checks at all, so its PRs sit unmergeable rather
+# than failing.
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main, development]
   push:
-    branches: [main, dev]
+    branches: [main, development]
 
 # A force-push or a second commit makes the run in flight irrelevant.
 concurrency:

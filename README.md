@@ -159,11 +159,11 @@ The version in `Cargo.toml` is the single source of truth — wasm-pack copies i
 `pkg/package.json`, which is what npm publishes. A release is:
 
 1. Bump `version` in `Cargo.toml`, and `cargo check` so `Cargo.lock` follows.
-2. Merge the work to `dev`, then open `dev` → `main` and merge that.
+2. Merge the work to `development`, then open `development` → `main` and merge that.
 3. `git tag v0.3.0 && git push origin v0.3.0`, on `main`.
 
-`dev` is the integration branch: feature branches target it, and `main` only
-ever takes a `dev` → `main` PR. `ci.yml` runs on PRs into either and on the
+`development` is the integration branch: feature branches target it, and `main`
+only ever takes a `development` → `main` PR. `ci.yml` runs on PRs into either and on the
 merge commit each ends up with, so the commit a tag is cut from has been
 through the suite twice. `release.yml` is the only thing keyed to the tag.
 
