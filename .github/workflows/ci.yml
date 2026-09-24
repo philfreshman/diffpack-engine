@@ -32,7 +32,7 @@ env:
   # floating, a future release picks up a new wasm-pack and ships a materially
   # different module with nothing in the repo to explain it. Bump this
   # deliberately.
-  WASM_PACK_VERSION: v0.15.0
+  WASM_PACK_VERSION: 0.15.0
 
 jobs:
   # `cargo fmt --check` needs no compile at all, so a formatting failure is
@@ -147,9 +147,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/wasm-pack-action@v0.4.0
+      # Not jetli/wasm-pack-action: its latest release still runs on Node 16.
+      # install-action is a composite action, so there is no Node runtime to age out.
+      - uses: taiki-e/install-action@v2
         with:
-          version: ${{ env.WASM_PACK_VERSION }}
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
       - run: wasm-pack test --headless --chrome
 
   # Builds exactly what `release.yml` publishes, so a PR that breaks the
@@ -165,9 +167,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/wasm-pack-action@v0.4.0
+      # Not jetli/wasm-pack-action: its latest release still runs on Node 16.
+      # install-action is a composite action, so there is no Node runtime to age out.
+      - uses: taiki-e/install-action@v2
         with:
-          version: ${{ env.WASM_PACK_VERSION }}
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
       - name: wasm-pack build
         run: wasm-pack build --release --target web --scope philfreshman
