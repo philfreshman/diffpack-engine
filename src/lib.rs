@@ -12,8 +12,9 @@ mod types;
 // is what holds this list in place.
 pub use crate::core::{build_diff_tree, get_diff_content, whitespace_mode};
 pub use crate::package::{
-    build_go_zip_url, build_tarball_url, escape_go_module_path, extract_archive_bytes,
-    select_pypi_sdist_url, strip_go_module_root, PyPiResponse, PyPiUrl,
+    archive_source, build_go_zip_url, build_tarball_url, choose_archive, escape_go_module_path,
+    extract_archive_bytes, select_pypi_sdist_url, strip_go_module_root, unpack_archive,
+    ArchiveSource, PyPiResponse, PyPiUrl,
 };
 /// The per-file view — neither version, added, removed, byte-identical or
 /// changed — that `get_diff_for_path` renders for the browser.

@@ -35,10 +35,24 @@ output, is a breaking change rather than an internal one.
 | `get_diff_content(filename, from, to, ignore_whitespace)` | The unified diff for one file. Its **output** is the contract, not just its signature — see below |
 | `build_patch(filename, from, to, ignore_whitespace)` → `Patch` | One file's view from its content in each version (`None` where a version has no file there): a sentence when neither has it, every line against `/dev/null` when one side does, the file itself when the two are byte-identical, `get_diff_content` otherwise. `get_diff_for_path` renders through it. Its output is the contract too |
 | `whitespace_mode(ignore_whitespace)` → `WhitespaceMode` | The `Exact`/`IgnoreAll` choice, for a caller configuring its own `TextDiff` |
-| `build_tarball_url(registry, pkg, version)` | The archive URL for npm (scoped names included) and crates.io |
-| `select_pypi_sdist_url(&[PyPiUrl])` | The sdist-then-wheel preference order, over a parsed `PyPiResponse` |
-| `escape_go_module_path`, `build_go_zip_url`, `strip_go_module_root` | The Go module proxy's path escaping, its zip URL, and the `<module>@<version>/` prefix every entry carries |
+| `archive_source(registry, pkg, version)` → `ArchiveSource` | Where one version's archive is: `Archive { url }` for npm, crates.io and Go, `Listing { url }` (the metadata to fetch first) for PyPI |
+| `choose_archive(registry, listing)` | The archive URL read out of a fetched `Listing` — PyPI's metadata JSON, through `select_pypi_sdist_url` |
+| `unpack_archive(registry, pkg, version, bytes)` | The fetched archive unpacked to the path → entry map, wrapper directory removed. The only correct way to unpack a Go module zip from outside the crate |
+| `build_tarball_url(registry, pkg, version)` | The archive URL for npm (scoped names included) and crates.io. `archive_source` covers every registry |
+| `select_pypi_sdist_url(&[PyPiUrl])` | The sdist-then-wheel preference order, over a parsed `PyPiResponse`. `choose_archive` does the parse too |
+| `escape_go_module_path`, `build_go_zip_url`, `strip_go_module_root` | The Go module proxy's path escaping, its zip URL, and the `<module>@<version>/` prefix every entry carries. `strip_go_module_root` needs a map `extract_archive_bytes` cannot give it — use `unpack_archive` |
 | `extract_archive_bytes(bytes)`, `build_diff_tree(..)` | Extraction and the tree builder, which `examples/bench.rs` also drives |
+
+`archive_source`, `choose_archive` and `unpack_archive` are one lookup, and none of them makes a
+network call — fetching is left to the caller, so each fetch keeps its own size cap and its own
+error:
+
+```text
+archive_source → fetch → (choose_archive → fetch, for a Listing only) → unpack_archive
+```
+
+The browser's `fetch_and_extract_package` is those steps with `fetch` between them. Registries are
+named by string (`npm`, `crates`, `pypi`, `go`); an unknown one is an `Err`.
 
 `get_diff_content` renders a `--- from/{f}` / `+++ to/{f}` header, then one line per change as sign
 (`-`, `+` or a space), a space, and the line. The tree's counts are taken from the same lines, so a
