@@ -75,10 +75,11 @@
 				"/^\\.github/workflows/[^/]+\\.ya?ml$/"
 			],
 			"matchStrings": [
-				"WASM_PACK_VERSION:\\s*(?<currentValue>v[\\d.]+)"
+				"WASM_PACK_VERSION:\\s*(?<currentValue>[\\d.]+)"
 			],
 			"depNameTemplate": "rustwasm/wasm-pack",
-			"datasourceTemplate": "github-releases"
+			"datasourceTemplate": "github-releases",
+			"extractVersionTemplate": "^v(?<version>.+)$"
 		}
 	]
 }
