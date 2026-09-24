@@ -1,4 +1,4 @@
-use diffpack_engine::build_diff_tree_for_package;
+use diffpack_engine::{build_diff_tree_for_package, get_diff_for_path};
 use serde::Deserialize;
 use wasm_bindgen_test::*;
 
@@ -62,4 +62,26 @@ async fn diffing_a_version_against_itself_reports_no_changes() {
         statuses.iter().all(|status| status == "unchanged"),
         "expected every entry unchanged when diffing a version against itself, got {statuses:?}"
     );
+}
+
+/// `get_diff_for_path` renders through `build_patch` but still hands JS the
+/// camelCase `{ data, isDiff }` the app reads, not `Patch`'s own `is_diff`.
+#[wasm_bindgen_test]
+async fn a_file_view_reaches_js_as_data_and_is_diff() {
+    #[derive(Deserialize, Debug)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FileView {
+        data: String,
+        is_diff: bool,
+    }
+
+    diff_tree("itoa", "1.0.18", "1.0.18").await;
+
+    let value = get_diff_for_path("Cargo.toml".to_string(), None, false)
+        .expect("the active diff should have a view for Cargo.toml");
+    let view: FileView =
+        serde_wasm_bindgen::from_value(value).expect("the view should be { data, isDiff }");
+
+    assert!(!view.is_diff, "a version against itself is byte-identical");
+    assert!(view.data.contains("name = \"itoa\""), "got {view:?}");
 }
