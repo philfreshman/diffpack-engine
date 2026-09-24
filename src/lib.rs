@@ -11,8 +11,9 @@ mod types;
 // is what holds this list in place.
 pub use crate::core::{build_diff_tree, get_diff_content, whitespace_mode};
 pub use crate::package::{
-    build_go_zip_url, build_tarball_url, escape_go_module_path, extract_archive_bytes,
-    select_pypi_sdist_url, strip_go_module_root, PyPiResponse, PyPiUrl,
+    archive_source, build_go_zip_url, build_tarball_url, choose_archive, escape_go_module_path,
+    extract_archive_bytes, select_pypi_sdist_url, strip_go_module_root, unpack_archive,
+    ArchiveSource, PyPiResponse, PyPiUrl,
 };
 pub use crate::types::{DiffFileEntry, DiffStatus, FileMapEntry, FileType};
 use serde::Serialize;

@@ -13,11 +13,12 @@
 //! would have to match — not every branch a second time.
 
 use diffpack_engine::{
-    build_go_zip_url, build_tarball_url, escape_go_module_path, get_diff_content,
-    select_pypi_sdist_url, strip_go_module_root, whitespace_mode, FileMapEntry, FileType,
-    PyPiResponse, PyPiUrl, WhitespaceMode,
+    archive_source, build_go_zip_url, build_tarball_url, choose_archive, escape_go_module_path,
+    get_diff_content, select_pypi_sdist_url, strip_go_module_root, unpack_archive, whitespace_mode,
+    ArchiveSource, FileMapEntry, FileType, PyPiResponse, PyPiUrl, WhitespaceMode,
 };
 use std::collections::HashMap;
+use std::io::{Cursor, Write};
 
 fn file(content: &str) -> FileMapEntry {
     FileMapEntry {
@@ -170,4 +171,76 @@ fn the_versioned_module_root_is_stripped_from_every_path() {
     assert_eq!(paths, ["go.mod", "src", "src/lib.go"]);
     assert_eq!(stripped["src/lib.go"].content, "package y\n");
     assert!(matches!(stripped["src"].file_type, FileType::Directory));
+}
+
+// ---- the archive lookup --------------------------------------------------
+
+/// Matched on rather than compared, which is what holds the variants and their
+/// field in place: a dependent re-exporting the enum has to be able to take
+/// it apart.
+#[test]
+fn an_archive_source_says_whether_to_fetch_the_archive_or_a_listing() {
+    match archive_source("crates", "serde", "1.0.200").unwrap() {
+        ArchiveSource::Archive { url } => assert_eq!(
+            url,
+            "https://static.crates.io/crates/serde/serde-1.0.200.crate"
+        ),
+        other => panic!("expected an archive, got {other:?}"),
+    }
+    match archive_source("pypi", "requests", "2.32.3").unwrap() {
+        ArchiveSource::Listing { url } => {
+            assert_eq!(url, "https://pypi.org/pypi/requests/2.32.3/json")
+        }
+        other => panic!("expected a listing, got {other:?}"),
+    }
+    assert_eq!(
+        archive_source("maven", "guava", "33.0.0").unwrap_err(),
+        "Unsupported registry: maven"
+    );
+}
+
+#[test]
+fn an_archive_url_is_chosen_out_of_a_pypi_listing() {
+    let listing = r#"{
+        "urls": [
+            {"packagetype": "bdist_wheel", "url": "https://files/x-1.0-py3-none-any.whl"},
+            {"packagetype": "sdist", "url": "https://files/x-1.0.tar.gz"}
+        ]
+    }"#;
+
+    assert_eq!(
+        choose_archive("pypi", listing).unwrap(),
+        "https://files/x-1.0.tar.gz"
+    );
+    assert!(choose_archive("crates", listing).is_err());
+}
+
+/// A module zip exactly as the proxy lays it out: every entry under
+/// `<module>@<version>/`, with no directory entries of its own.
+fn go_module_zip() -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (path, content) in [
+        ("github.com/x/y@v1.2.3/go.mod", "module github.com/x/y\n"),
+        ("github.com/x/y@v1.2.3/src/lib.go", "package y\n"),
+    ] {
+        writer.start_file(path, options).unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// The whole Go path from outside the crate, from the zip's bytes. Composing
+/// the public helpers by hand leaves `y@v1.2.3/` on every path, which a diff
+/// reads as every file removed and added again.
+#[test]
+fn a_go_module_zip_unpacks_to_paths_without_the_version() {
+    let files = unpack_archive("go", "github.com/x/y", "v1.2.3", &go_module_zip()).unwrap();
+
+    let mut paths: Vec<&str> = files.keys().map(String::as_str).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["go.mod", "src", "src/lib.go"]);
+    assert_eq!(files["src/lib.go"].content, "package y\n");
+    assert!(matches!(files["src"].file_type, FileType::Directory));
 }
