@@ -678,9 +678,13 @@ impl<'a> DiffTreeBuilder<'a> {
 /// private — a consumer gets the tree, not the machinery that assembles it.
 ///
 /// A path is one node, with one exception a consumer has to allow for: a path
-/// that is a file in one version and a directory in the other is two sibling
-/// nodes with the same `path`, told apart by `type`, the old version's first.
-/// A file node never has anything under it.
+/// that is a file in one version and a directory in the other — or both in
+/// one, which a malformed archive can manage — is two sibling nodes with the
+/// same `path`, told apart by `type`, the old version's first. A file node
+/// never has anything under it. Each of the two still follows the usual
+/// rules, so either can be the only node at that path: a file moved into the
+/// directory is listed as the rename beneath it, not at its old path, and a
+/// directory left with nothing under it is not listed.
 pub fn build_diff_tree(
     from_files: &HashMap<String, FileMapEntry>,
     to_files: &HashMap<String, FileMapEntry>,
@@ -1536,6 +1540,38 @@ mod tests {
                 "    src/lib/x.js File Removed +0 -1",
                 "  src/lib File Added +1 -0",
                 "  src/util.js File Unchanged +0 -0",
+            ]
+        );
+        assert!(files_with_children(&backward).is_empty());
+    }
+
+    /// A malformed archive can have both in one version: a file `lib` and a
+    /// file beneath `lib/`, which `extract_archive_bytes` keeps as they are,
+    /// with no entry for the directory. It is still two nodes, the file with
+    /// nothing under it, and with both in the old version the file goes first.
+    #[test]
+    fn a_file_and_a_directory_at_one_path_in_one_version_are_still_two_nodes() {
+        let both = [("lib", LIB), ("lib/index.js", LIB_INDEX)];
+        let directory_only = [("lib/index.js", LIB_INDEX)];
+
+        let forward = tree(&both, &directory_only);
+        assert_eq!(
+            rows(&forward),
+            [
+                "lib File Removed +0 -1",
+                "lib Directory Unchanged +0 -0",
+                "  lib/index.js File Unchanged +0 -0",
+            ]
+        );
+        assert!(files_with_children(&forward).is_empty());
+
+        let backward = tree(&directory_only, &both);
+        assert_eq!(
+            rows(&backward),
+            [
+                "lib Directory Unchanged +0 -0",
+                "  lib/index.js File Unchanged +0 -0",
+                "lib File Added +1 -0",
             ]
         );
         assert!(files_with_children(&backward).is_empty());
