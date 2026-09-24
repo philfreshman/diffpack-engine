@@ -1,6 +1,6 @@
 [package]
 name = "diffpack-engine"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI and Go, as a WebAssembly module."
 # `git+https://` and the `.git` suffix rather than the plain URL Cargo would
