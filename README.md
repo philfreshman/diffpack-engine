@@ -49,6 +49,14 @@ rather than from a `similar` of its own that might resolve to a different versio
 
 `DiffTreeBuilder` and everything under extraction stay private; `build_diff_tree` is the door.
 
+The tree it returns has one node per path, with one exception to allow for: a path that is a file
+in one version and a directory in the other — `lib` a module in one and a folder holding
+`lib/index.js` in the other — or both in one, which a malformed archive can manage, is two sibling
+nodes with the same `path`, told apart by `type`, the old version's first. A file node never has
+anything under it. Each of the two still follows the usual rules, so either can be the only node at
+that path: a file moved into the folder is listed as the rename beneath it, not at its old path,
+and a folder left with nothing in it is not listed.
+
 ## The sibling repositories
 
 Three repositories carry diffpack, and they are meant to be checked out side by side under one
@@ -77,12 +85,77 @@ Needs a Rust toolchain with the `wasm32-unknown-unknown` target, and
 
 ```bash
 cargo test                                              # the host-side suite
-cargo fmt --all                                         # what CI checks
+.githooks/pre-commit                                    # the four gates CI runs
 wasm-pack build --release --target web --scope philfreshman
 ```
 
 The build writes `pkg/`, which is gitignored: it is generated on every build and published from CI,
 never committed.
+
+### Checks
+
+Four gates, run by `.githooks/pre-commit` before every commit and again by `ci.yml` on every PR.
+Same commands in both places, so a commit that passes locally fails CI only if the RustSec advisory
+database moved in between.
+
+```bash
+cargo fmt --all --check                                   # formatting
+cargo clippy --all-targets --all-features -- -D warnings  # lints
+cargo deny --all-features check                           # licences, advisories, sources
+cargo audit --deny warnings --no-yanked                   # advisories, unmaintained, unsound
+```
+
+The hook is per-clone and off until you turn it on:
+
+```bash
+rustup component add clippy
+cargo install --locked cargo-deny cargo-audit
+git config core.hooksPath .githooks
+```
+
+It takes about two seconds on a warm cache. `git commit --no-verify`, or `SKIP_PRECOMMIT=1`, skips
+it; CI does not.
+
+`deny.toml` is the supply-chain policy: permissive licences only, no git dependencies, no registry
+but crates.io, yanked crates denied. It matters more than it would in an application — this crate
+ships as a wasm module inside somebody else's bundle, and Renovate automerges dependency PRs, so
+these two jobs are what an automerge has to get past.
+
+`cargo audit` overlaps `cargo deny check advisories`; it is kept because it is the one with
+`--deny warnings`, which fails on unmaintained and unsound crates too. `--no-yanked` is not a
+weakening — `deny.toml` denies yanked crates — it is there because cargo-audit's own yanked check
+updates the git crates.io index, which measured 17 minutes against 0.7s without it.
+
+### Dependencies
+
+Crate updates are Renovate's job, not anyone's. `renovate.json` has it read `Cargo.toml` and
+`Cargo.lock` twice a month, open one PR per crate, and let GitHub merge each one the moment the
+suite above goes green — no review, no queue. A full `Cargo.lock` refresh runs on the 1st.
+
+Cargo ranges here are minimums (`"1.0"`, `"0.4"`), so most of those PRs change `Cargo.lock` and
+nothing else. That is the intended split: the manifest says what the crate needs, the lock says what
+it was built and tested against. It does mean the diff is rarely readable on its own — the four
+checks are what actually read it, which is why all seven CI jobs are required checks on
+`development`. A PR whose checks cannot run is a PR that never merges.
+
+Two things are deliberately not automerged:
+
+- **wasm-pack and the wasm-bindgen family.** Both decide the generated JS glue and the module's
+  bytes, and the two are version-locked against each other. `wasm-pack test --headless --chrome` can
+  pass on a pair that still fails in a consumer's bundler, so these get looked at. The wasm-bindgen
+  crates arrive as one grouped PR; `WASM_PACK_VERSION`, pinned in both workflows, is picked up by a
+  custom manager so the pin cannot quietly rot.
+- **Anything less than three days old** (`minimumReleaseAge`). This crate ends up inside other
+  people's bundles, and three days is the window in which a compromised or broken release is
+  normally yanked.
+
+Every PR body carries a Diffpack link per crate — `currentVersion → newVersion`, pointing at
+diffpack.io — so the actual contents of an update are one click from the PR. That is the same
+`prBodyDefinitions` trick diffpack uses on its own npm dependencies.
+
+Renovate itself is the Mend GitHub App, enabled per repository at
+<https://github.com/apps/renovate>. Nothing in this repo turns it on; if no dependency PRs and no
+Dependency Dashboard issue ever appear, the app has not been given access to it.
 
 ### Tests
 
@@ -125,11 +198,11 @@ The version in `Cargo.toml` is the single source of truth — wasm-pack copies i
 `pkg/package.json`, which is what npm publishes. A release is:
 
 1. Bump `version` in `Cargo.toml`, and `cargo check` so `Cargo.lock` follows.
-2. Merge the work to `dev`, then open `dev` → `main` and merge that.
+2. Merge the work to `development`, then open `development` → `main` and merge that.
 3. `git tag v0.3.0 && git push origin v0.3.0`, on `main`.
 
-`dev` is the integration branch: feature branches target it, and `main` only
-ever takes a `dev` → `main` PR. `ci.yml` runs on PRs into either and on the
+`development` is the integration branch: feature branches target it, and `main`
+only ever takes a `development` → `main` PR. `ci.yml` runs on PRs into either and on the
 merge commit each ends up with, so the commit a tag is cut from has been
 through the suite twice. `release.yml` is the only thing keyed to the tag.
 

@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# Blocks a commit that would fail CI on lints or on the supply chain.
+#
+# These are the same commands `.github/workflows/ci.yml` runs on every PR, so
+# a commit that passes here fails there only if the advisory database moved in
+# between. Enable with:
+#
+#     git config core.hooksPath .githooks
+#
+# That is per-clone, so a fresh clone has to run it once (see the README). It
+# is set on the repository, not the worktree, so every worktree inherits it.
+#
+# `git commit --no-verify` skips the lot. SKIP_PRECOMMIT=1 does the same, for
+# the case where the bypass has to come from a script or an editor's commit
+# button rather than the command line.
+
+set -e
+
+if [ -n "$SKIP_PRECOMMIT" ]; then
+    echo "pre-commit: skipped (SKIP_PRECOMMIT is set)"
+    exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+# A missing tool fails the commit rather than being quietly skipped: a check
+# that silently does not run is worse than no check, because the commit still
+# reports that it passed.
+require() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "pre-commit: $1 is not installed."
+        echo "            cargo install --locked $2"
+        exit 1
+    fi
+}
+
+require cargo-clippy clippy   # ships with rustup: `rustup component add clippy`
+require cargo-deny cargo-deny
+require cargo-audit cargo-audit
+
+# Ordered cheapest-first, so the fastest failure is the one you see.
+
+# Costs nothing and is the single most common way a PR fails CI.
+echo "pre-commit: cargo fmt --all --check"
+cargo fmt --all --check
+
+# `--all-targets` covers `tests/` and `examples/bench.rs` as well as `src/`,
+# matching the `cargo test` job's reach. `-D warnings` is what makes it a gate
+# rather than a report.
+echo "pre-commit: cargo clippy --all-targets --all-features -- -D warnings"
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Licences, advisories, yanked crates and dependency sources, per `deny.toml`.
+echo "pre-commit: cargo deny --all-features check"
+cargo deny --all-features check
+
+# Overlaps `cargo deny check advisories` — both read the RustSec database — but
+# it is the tool that carries `--deny warnings`, so unmaintained and unsound
+# crates fail here too.
+#
+# `--no-yanked` is not a weakening: `deny.toml` sets `yanked = "deny"` and the
+# run above has already enforced it. It is here because cargo-audit's own
+# yanked check updates the git crates.io index, which took 17 minutes on a warm
+# cache in testing against 0.7s without it — enough to make the hook something
+# people disable.
+echo "pre-commit: cargo audit --deny warnings --no-yanked"
+cargo audit --deny warnings --no-yanked
+
+echo "pre-commit: ok"

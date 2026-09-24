@@ -1,0 +1,67 @@
+# `cargo deny` config — the supply-chain half of the quality gate.
+#
+# Run by `.githooks/pre-commit` before every commit and by the `cargo-deny`
+# job in `.github/workflows/ci.yml` on every PR. The two run the same command,
+# `cargo deny --all-features check`, so a commit that passes locally passes in
+# CI for the same reasons.
+#
+# This matters more here than in an application: the crate is published to npm
+# as a wasm module, so every dependency's code ends up inside a bundle someone
+# else ships. Dependency PRs are automerged by Renovate, which makes this the
+# thing standing between an automerge and a bad dependency.
+
+[graph]
+# The module is only ever built for wasm32 and the tests only ever for the
+# host. Checking every other target would flag advisories and licences in
+# dependencies this crate cannot reach.
+targets = [
+    { triple = "wasm32-unknown-unknown" },
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+]
+all-features = true
+
+[advisories]
+# RUSTSEC advisories. `deny` on everything with no blanket ignore: an advisory
+# that genuinely does not apply gets its own entry below with a note saying
+# why, so the exception is reviewable rather than invisible.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive only. Anything copyleft would follow the wasm module into every
+# bundle that consumes `@philfreshman/diffpack-engine`.
+version = 2
+confidence-threshold = 0.9
+# This crate itself carries no `license` field and is `publish = false`. The
+# check is about what the module pulls in from elsewhere, not about it.
+private = { ignore = true }
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+]
+
+[bans]
+# Two versions of the same crate in the graph is usually a dependency that has
+# not caught up. It is a warning, not a failure, because it is frequently not
+# this crate's to fix.
+multiple-versions = "warn"
+wildcards = "deny"
+# The wasm-bindgen family is version-locked against the wasm-bindgen CLI that
+# wasm-pack runs (see `WASM_PACK_VERSION` in the workflows). A second copy of
+# any of these in the graph produces a module that fails to instantiate, so
+# unlike the general case above it is an error.
+deny = []
+skip = []
+
+[sources]
+# Everything comes from crates.io. A git dependency is not something that
+# should be able to arrive unremarked in an automerged Renovate PR.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

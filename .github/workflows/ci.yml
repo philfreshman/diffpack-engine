@@ -1,14 +1,20 @@
 name: CI
 
-# `dev` is the integration branch: feature PRs target it, and `main` takes a
-# single `dev` -> `main` PR per release. Both branches are listed on both
-# events, so the suite gates every PR and runs again on the merge commit each
-# branch ends up with — including the `main` one a `v*` tag is cut from.
+# `development` is the integration branch: feature PRs target it, and `main`
+# takes a single `development` -> `main` PR per release. Both branches are
+# listed on both events, so the suite gates every PR and runs again on the
+# merge commit each branch ends up with — including the `main` one a `v*` tag
+# is cut from.
+#
+# These names are load-bearing twice over: every job below is a required check
+# on `development`, and Renovate's automerge waits on them. A branch that is
+# not listed here reports no checks at all, so its PRs sit unmergeable rather
+# than failing.
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main, development]
   push:
-    branches: [main, dev]
+    branches: [main, development]
 
 # A force-push or a second commit makes the run in flight irrelevant.
 concurrency:
@@ -43,6 +49,67 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+
+  # The lint gate. Shares the `fmt` job's reason for existing — it is cheap and
+  # it fails for reasons that have nothing to do with the tests — but it needs a
+  # full compile, so it is its own job rather than a step on `fmt`.
+  #
+  # `--all-targets` reaches `tests/` and `examples/bench.rs`, matching what
+  # `cargo test` builds. `-D warnings` is what makes it a gate: without it
+  # clippy reports and exits 0.
+  #
+  # `.githooks/pre-commit` runs this same command, so this job should only ever
+  # fail for a commit that was pushed with the hook disabled or uninstalled.
+  #
+  # When this fails: `cargo clippy --all-targets --all-features --fix`, then
+  # read what is left over.
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Licences, RUSTSEC advisories, yanked crates and dependency sources, per
+  # `deny.toml`. This is the check Renovate's automerge runs into: a dependency
+  # PR that introduces a copyleft licence, a git dependency or an advisory
+  # fails here before it can merge itself.
+  #
+  # Also `.githooks/pre-commit`, which is why the command is spelled the same.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --all-features check
+
+  # Overlaps `deny` above — both read the RustSec advisory database — but
+  # cargo-audit is the one with `--deny warnings`, which fails on unmaintained
+  # and unsound crates as well as on vulnerabilities. Two jobs rather than one
+  # so the summary says which kind of problem it is.
+  #
+  # `--no-yanked` is not a weakening: `deny.toml` sets `yanked = "deny"`, so the
+  # job above covers it. cargo-audit's own yanked check updates the git
+  # crates.io index, which is minutes of wall clock for a check already being
+  # made.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings --no-yanked
 
   # The unit tests over the engine: extraction, path normalisation, the URL
   # builders, rename detection, the tree's statuses and counts, and the
