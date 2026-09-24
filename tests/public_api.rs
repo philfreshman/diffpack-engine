@@ -13,8 +13,8 @@
 //! would have to match — not every branch a second time.
 
 use diffpack_engine::{
-    build_go_zip_url, build_tarball_url, escape_go_module_path, get_diff_content,
-    select_pypi_sdist_url, strip_go_module_root, whitespace_mode, FileMapEntry, FileType,
+    build_go_zip_url, build_patch, build_tarball_url, escape_go_module_path, get_diff_content,
+    select_pypi_sdist_url, strip_go_module_root, whitespace_mode, FileMapEntry, FileType, Patch,
     PyPiResponse, PyPiUrl, WhitespaceMode,
 };
 use std::collections::HashMap;
@@ -56,6 +56,65 @@ fn ignoring_whitespace_turns_a_reformat_into_context() {
         get_diff_content("a.rs", from, to, false),
         "--- from/a.rs\n+++ to/a.rs\n  fn main() {\n- \tlet x=1;\n+     let x = 1;\n  }"
     );
+}
+
+// ---- one file's view ---------------------------------------------------
+
+/// The four cases `build_patch` decides for itself, written out literally. The
+/// fifth, a changed file, is `get_diff_content`'s output and is pinned above.
+///
+/// The added and removed files end in `\n` on purpose: each line is split on
+/// `\n`, so both get an empty last `+`/`-` line that the tree's counts do not
+/// see. That is today's output, and it is pinned as such — changing it is a
+/// change to make once, here, with every renderer calling this one function.
+#[test]
+fn a_file_view_is_reachable_and_unchanged_in_every_case() {
+    assert_eq!(
+        build_patch("gone.rs", None, None, false),
+        Patch {
+            data: "File not present in either version.".to_string(),
+            is_diff: false,
+        }
+    );
+    assert_eq!(
+        build_patch("src/new.rs", None, Some("one\ntwo\n"), false),
+        Patch {
+            data: "--- /dev/null\n+++ to/src/new.rs\n+ one\n+ two\n+ ".to_string(),
+            is_diff: true,
+        }
+    );
+    assert_eq!(
+        build_patch("src/old.rs", Some("one\ntwo\n"), None, false),
+        Patch {
+            data: "--- from/src/old.rs\n+++ /dev/null\n- one\n- two\n- ".to_string(),
+            is_diff: true,
+        }
+    );
+    assert_eq!(
+        build_patch("src/lib.rs", Some("same\n"), Some("same\n"), false),
+        Patch {
+            data: "same\n".to_string(),
+            is_diff: false,
+        }
+    );
+}
+
+/// The shape diffpack-server stores in `patches.json`, snake_case and all. It
+/// re-exports this type in place of its own, so a renamed field would be a
+/// stored file it can no longer read.
+#[test]
+fn a_patch_serialises_under_its_rust_field_names() {
+    let patch = Patch {
+        data: "--- /dev/null\n+++ to/a.rs\n+ only".to_string(),
+        is_diff: true,
+    };
+    let json = serde_json::json!({
+        "data": "--- /dev/null\n+++ to/a.rs\n+ only",
+        "is_diff": true,
+    });
+
+    assert_eq!(serde_json::to_value(&patch).unwrap(), json);
+    assert_eq!(serde_json::from_value::<Patch>(json).unwrap(), patch);
 }
 
 // ---- the whitespace choice --------------------------------------------
