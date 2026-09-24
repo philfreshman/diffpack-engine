@@ -27,12 +27,13 @@ A→B then B→C fetches B once. `build_diff_tree_for_package` is the call that 
 
 The crate is also a plain Cargo dependency. [`diffpack-server`](https://github.com/philfreshman/diffpack-server)
 computes diffs with it natively — no wasm, no browser — and the items below are supported API for
-that consumer: a change to any of their signatures, or to `get_diff_content`'s output, is a breaking
-change rather than an internal one.
+that consumer: a change to any of their signatures, or to `get_diff_content`'s or `build_patch`'s
+output, is a breaking change rather than an internal one.
 
 | Item | Does |
 | --- | --- |
 | `get_diff_content(filename, from, to, ignore_whitespace)` | The unified diff for one file. Its **output** is the contract, not just its signature — see below |
+| `build_patch(filename, from, to, ignore_whitespace)` → `Patch` | One file's view from its content in each version (`None` where a version has no file there): a sentence when neither has it, every line against `/dev/null` when one side does, the file itself when the two are byte-identical, `get_diff_content` otherwise. `get_diff_for_path` renders through it. Its output is the contract too |
 | `whitespace_mode(ignore_whitespace)` → `WhitespaceMode` | The `Exact`/`IgnoreAll` choice, for a caller configuring its own `TextDiff` |
 | `archive_source(registry, pkg, version)` → `ArchiveSource` | Where one version's archive is: `Archive { url }` for npm, crates.io and Go, `Listing { url }` (the metadata to fetch first) for PyPI |
 | `choose_archive(registry, listing)` | The archive URL read out of a fetched `Listing` — PyPI's metadata JSON, through `select_pypi_sdist_url` |
@@ -57,6 +58,12 @@ named by string (`npm`, `crates`, `pypi`, `go`); an unknown one is an `Err`.
 (`-`, `+` or a space), a space, and the line. The tree's counts are taken from the same lines, so a
 second implementation that renders them differently makes the tree and the file view disagree about
 the same file. That is the reason these are exported rather than rewritten on the far side.
+
+`build_patch` is the whole file view around that diff, and `Patch { data, is_diff }` is what it
+returns. `is_diff` is `Patch`'s serialised name as well — the shape diffpack-server stores — while
+`get_diff_for_path` renames it to `isDiff` for the browser. An added or removed file is split on
+`\n`, so one ending in a newline gets an empty last `+`/`-` line that the tree does not count; that
+is current behaviour, kept as it is until it can be changed in this one place.
 
 `WhitespaceMode` is `similar`'s, re-exported here so a dependent takes the type from this crate
 rather than from a `similar` of its own that might resolve to a different version.

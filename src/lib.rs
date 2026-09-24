@@ -1,5 +1,6 @@
 mod core;
 mod package;
+mod patch;
 mod types;
 
 // The crate's native surface: the pieces a Rust dependent links against
@@ -15,6 +16,12 @@ pub use crate::package::{
     extract_archive_bytes, select_pypi_sdist_url, strip_go_module_root, unpack_archive,
     ArchiveSource, PyPiResponse, PyPiUrl,
 };
+/// The per-file view — neither version, added, removed, byte-identical or
+/// changed — that `get_diff_for_path` renders for the browser.
+///
+/// Supported API: diffpack-server renders its file views through the same
+/// function, so the two cannot drift apart on what a view shows.
+pub use crate::patch::{build_patch, Patch};
 pub use crate::types::{DiffFileEntry, DiffStatus, FileMapEntry, FileType};
 use serde::Serialize;
 /// `similar`'s own type, which [`whitespace_mode`] returns — so it is part of
@@ -76,6 +83,9 @@ fn file_content<'a>(files: &'a HashMap<String, FileMapEntry>, path: &str) -> Opt
     })
 }
 
+/// What `get_diff_for_path` hands JS: a [`Patch`] under the camelCase names
+/// the app reads (`{ data, isDiff }`). Private, and only a rename — which file
+/// view to show is [`build_patch`]'s decision, not this layer's.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiffResult {
@@ -83,53 +93,11 @@ struct DiffResult {
     is_diff: bool,
 }
 
-fn build_diff_result(
-    filename: &str,
-    from_content: Option<&str>,
-    to_content: Option<&str>,
-    ignore_whitespace: bool,
-) -> DiffResult {
-    match (from_content, to_content) {
-        (None, None) => DiffResult {
-            data: "File not present in either version.".to_string(),
-            is_diff: false,
-        },
-        (None, Some(to)) => {
-            let header = format!("--- /dev/null\n+++ to/{filename}");
-            let mut lines = Vec::new();
-            lines.push(header);
-            for line in to.split('\n') {
-                lines.push(format!("+ {line}"));
-            }
-            DiffResult {
-                data: lines.join("\n"),
-                is_diff: true,
-            }
-        }
-        (Some(from), None) => {
-            let header = format!("--- from/{filename}\n+++ /dev/null");
-            let mut lines = Vec::new();
-            lines.push(header);
-            for line in from.split('\n') {
-                lines.push(format!("- {line}"));
-            }
-            DiffResult {
-                data: lines.join("\n"),
-                is_diff: true,
-            }
-        }
-        (Some(from), Some(to)) => {
-            if from == to {
-                DiffResult {
-                    data: to.to_string(),
-                    is_diff: false,
-                }
-            } else {
-                DiffResult {
-                    data: core::get_diff_content(filename, from, to, ignore_whitespace),
-                    is_diff: true,
-                }
-            }
+impl From<Patch> for DiffResult {
+    fn from(patch: Patch) -> Self {
+        DiffResult {
+            data: patch.data,
+            is_diff: patch.is_diff,
         }
     }
 }
@@ -202,7 +170,12 @@ pub fn get_diff_for_path(
         .as_deref()
         .and_then(|files| file_content(files, &filename));
 
-    let result = build_diff_result(&filename, from_content, to_content, ignore_whitespace);
+    let result = DiffResult::from(build_patch(
+        &filename,
+        from_content,
+        to_content,
+        ignore_whitespace,
+    ));
     Ok(serde_wasm_bindgen::to_value(&result)?)
 }
 
@@ -265,74 +238,17 @@ mod tests {
         assert_eq!(file_content(&files, "missing.rs"), None);
     }
 
-    /// The path is in neither version — a stale link, or a file that only
-    /// ever existed as a rename's source. The viewer gets a sentence, not a
-    /// diff, so it does not try to render one.
+    /// The rename is the whole of this layer's say in a file view: the JS side
+    /// reads `isDiff`, and the content passes through untouched.
     #[test]
-    fn a_file_in_neither_version_is_not_a_diff() {
-        let result = build_diff_result("gone.rs", None, None, false);
-        assert!(!result.is_diff);
-        assert_eq!(result.data, "File not present in either version.");
-    }
-
-    #[test]
-    fn an_added_file_is_rendered_against_dev_null() {
-        let result = build_diff_result("a.rs", None, Some("one\ntwo"), false);
-        assert!(result.is_diff);
-        assert_eq!(result.data, "--- /dev/null\n+++ to/a.rs\n+ one\n+ two");
-    }
-
-    #[test]
-    fn a_removed_file_is_rendered_against_dev_null() {
-        let result = build_diff_result("a.rs", Some("one\ntwo"), None, false);
-        assert!(result.is_diff);
-        assert_eq!(result.data, "--- from/a.rs\n+++ /dev/null\n- one\n- two");
-    }
-
-    /// Byte-identical: the file itself, marked as not a diff, so the viewer
-    /// renders it as a file rather than as a hunk of all-context lines.
-    #[test]
-    fn an_unchanged_file_is_returned_as_its_own_content() {
-        let result = build_diff_result("a.rs", Some("same\n"), Some("same\n"), false);
-        assert!(!result.is_diff);
-        assert_eq!(result.data, "same\n");
-    }
-
-    #[test]
-    fn a_changed_file_is_rendered_as_a_diff() {
-        let result = build_diff_result("a.rs", Some("one\n"), Some("two\n"), false);
-        assert!(result.is_diff);
-        assert_eq!(result.data, "--- from/a.rs\n+++ to/a.rs\n- one\n+ two");
-    }
-
-    /// Whitespace-only changes still reach the diff renderer — the file is
-    /// not byte-identical — but in `ignore_whitespace` mode every line comes
-    /// back as context.
-    #[test]
-    fn a_reformat_is_all_context_when_whitespace_is_ignored() {
-        let from = "fn main() {\n\tlet x=1;\n}\n";
-        let to = "fn main() {\n    let x = 1;\n}\n";
-
-        let ignoring = build_diff_result("a.rs", Some(from), Some(to), true);
-        assert!(ignoring.is_diff);
-        assert!(
-            !ignoring
-                .data
-                .lines()
-                .any(|line| line.starts_with('-') && !line.starts_with("---")),
-            "no line should read as removed: {}",
-            ignoring.data
+    fn a_patch_reaches_js_under_camel_case_names() {
+        let result = DiffResult::from(build_patch("a.rs", Some("one\n"), Some("two\n"), false));
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::json!({
+                "data": "--- from/a.rs\n+++ to/a.rs\n- one\n+ two",
+                "isDiff": true,
+            })
         );
-
-        let exact = build_diff_result("a.rs", Some(from), Some(to), false);
-        assert!(exact.data.contains("- \tlet x=1;"));
-    }
-
-    /// A one-line file has no trailing newline to split on; the renderer must
-    /// still produce a header and exactly one line.
-    #[test]
-    fn a_file_without_a_trailing_newline_renders_one_line() {
-        let result = build_diff_result("a.rs", None, Some("only"), false);
-        assert_eq!(result.data, "--- /dev/null\n+++ to/a.rs\n+ only");
     }
 }
