@@ -11,17 +11,22 @@ with its history intact.
 
 ## What it exports
 
-Three `#[wasm_bindgen]` entry points, all driven from the app's diff worker:
+Four `#[wasm_bindgen]` entry points, driven from the app's diff worker:
 
 | Function | Does |
 | --- | --- |
 | `prefetch_package(registry, pkg, version)` | Fetch and extract one version into the session cache |
 | `build_diff_tree_for_package(registry, pkg, from, to, similarity_threshold, ignore_whitespace)` | Diff two versions, return the file tree with statuses, counts and detected renames |
+| `get_diff_for_comparison(registry, pkg, from, to, filename, old_path, ignore_whitespace)` | The unified diff for one path in the comparison it names |
 | `get_diff_for_path(filename, old_path, ignore_whitespace)` | The unified diff for one path in the active comparison |
 
 Extraction is cached per `registry:package:version` for the session and shared by `Rc`, so diffing
 A→B then B→C fetches B once. `build_diff_tree_for_package` is the call that establishes which pair
-`get_diff_for_path` reads.
+`get_diff_for_path` reads, and it does so when it *finishes*: with two builds in flight, the active
+comparison is whichever downloaded last, not whichever was asked for last.
+`get_diff_for_comparison` names its pair instead and reads both from the cache, so it is answered
+from its own versions however builds overlap. Either version not in the cache is an error. Prefer it;
+`get_diff_for_path` stays for callers that have not moved.
 
 ### The Rust surface
 
@@ -64,7 +69,7 @@ parent directory — the layout the app's `DIFFPACK_ENGINE_LOCAL=../diffpack-eng
 
 | Repo | Sibling path | Remote | What it is |
 | --- | --- | --- | --- |
-| diffpack | `../diffpack` | `philfreshman/diffpack` | The web app at [diffpack.io](https://www.diffpack.io) — TanStack Start, the UI, the registry search, the worker that calls the three functions above. It consumes the published npm package and never builds this crate. |
+| diffpack | `../diffpack` | `philfreshman/diffpack` | The web app at [diffpack.io](https://www.diffpack.io) — TanStack Start, the UI, the registry search, the worker that calls the functions above. It consumes the published npm package and never builds this crate. |
 | diffpack-engine | *this checkout* | `philfreshman/diffpack-engine` | This crate. |
 | diffpack-server | `../diffpack-server` | `philfreshman/diffpack-server` | An MCP server that computes diffs with this crate as a **native** Cargo dependency, pinned by git tag. It consumes the Rust surface above; nothing here or in the app depends on it. |
 

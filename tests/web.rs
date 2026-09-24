@@ -1,4 +1,4 @@
-use diffpack_engine::build_diff_tree_for_package;
+use diffpack_engine::{build_diff_tree_for_package, get_diff_for_comparison, get_diff_for_path};
 use serde::Deserialize;
 use wasm_bindgen_test::*;
 
@@ -62,4 +62,53 @@ async fn diffing_a_version_against_itself_reports_no_changes() {
         statuses.iter().all(|status| status == "unchanged"),
         "expected every entry unchanged when diffing a version against itself, got {statuses:?}"
     );
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct FileDiff {
+    data: String,
+    is_diff: bool,
+}
+
+/// `src/lib.rs` as the active diff has it, whatever that is.
+fn active_lib_rs() -> FileDiff {
+    let value = get_diff_for_path("src/lib.rs".to_string(), None, false).expect("a diff is active");
+    serde_wasm_bindgen::from_value(value).expect("file diff should deserialize")
+}
+
+fn lib_rs_in(from: &str, to: &str) -> Result<FileDiff, String> {
+    get_diff_for_comparison(
+        "crates".to_string(),
+        "itoa".to_string(),
+        from.to_string(),
+        to.to_string(),
+        "src/lib.rs".to_string(),
+        None,
+        false,
+    )
+    .map(|value| serde_wasm_bindgen::from_value(value).expect("file diff should deserialize"))
+    .map_err(|error| error.as_string().unwrap_or_default())
+}
+
+/// Built second, 1.0.11..1.0.14 is the active diff; a read that names
+/// 1.0.11..1.0.18 is still answered from those two versions, exactly as the
+/// active diff answered it while 1.0.18 was the one loaded.
+#[wasm_bindgen_test]
+async fn a_read_that_names_its_comparison_ignores_the_active_diff() {
+    diff_tree("itoa", "1.0.11", "1.0.18").await;
+    let expected = active_lib_rs();
+
+    diff_tree("itoa", "1.0.11", "1.0.14").await;
+    assert_ne!(active_lib_rs(), expected, "the two comparisons must differ");
+
+    assert_eq!(lib_rs_in("1.0.11", "1.0.18"), Ok(expected));
+}
+
+/// A version nothing was built from is an error that names it, not an empty
+/// diff.
+#[wasm_bindgen_test]
+fn a_read_of_a_comparison_never_built_is_an_error() {
+    let error = lib_rs_in("0.0.1", "0.0.2").expect_err("nothing was built");
+    assert!(error.contains("crates:itoa:0.0.1"), "{error}");
 }
