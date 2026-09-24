@@ -215,25 +215,23 @@ pub fn get_diff_for_path(
     let active = ACTIVE_DIFF
         .with(|state| state.borrow().clone())
         .ok_or_else(|| JsValue::from_str("No active diff context"))?;
-    let from_key = active.from_key;
-    let to_key = active.to_key;
 
-    // Two `Rc` clones let go of the cache's `RefCell` borrow; the file
-    // contents themselves are read in place, not copied out first.
-    let (from_files, to_files) = EXTRACTION_CACHE.with(|cache| {
-        let cache = cache.borrow();
-        (cache.get(&from_key).cloned(), cache.get(&to_key).cloned())
-    });
-
-    let from_path = old_path.as_deref().unwrap_or(&filename);
-    let from_content = from_files
-        .as_deref()
-        .and_then(|files| file_content(files, from_path));
-    let to_content = to_files
-        .as_deref()
-        .and_then(|files| file_content(files, &filename));
-
-    let result = build_diff_result(&filename, from_content, to_content, ignore_whitespace);
+    // The same read `get_diff_for_comparison` makes, over the pair the active
+    // diff names, so the two cannot drift apart. A build sets the active diff
+    // only once both versions are cached, and nothing evicts them, so the
+    // not-loaded error cannot happen here.
+    let result = EXTRACTION_CACHE
+        .with(|cache| {
+            diff_from_cache(
+                &cache.borrow(),
+                &active.from_key,
+                &active.to_key,
+                &filename,
+                old_path.as_deref(),
+                ignore_whitespace,
+            )
+        })
+        .map_err(|message| JsValue::from_str(&message))?;
     Ok(serde_wasm_bindgen::to_value(&result)?)
 }
 
@@ -241,7 +239,7 @@ pub fn get_diff_for_path(
 /// built last.
 ///
 /// [`get_diff_for_path`] reads from the active diff, which a build replaces
-/// when it *finishes*. With two builds in flight, the one that downloads last
+/// when it *finishes*. With two builds in flight, the one that finishes last
 /// wins, and a read for the other is answered from the wrong pair of versions.
 /// Naming the comparison takes the active diff out of the read: both versions
 /// are looked up in the extraction cache by their own keys, so builds can run
@@ -489,6 +487,67 @@ mod tests {
         assert_eq!(
             result.data,
             "--- from/lib/index.js\n+++ to/lib/index.js\n- old\n+ new"
+        );
+    }
+
+    /// Both versions loaded, and the file in neither: that is an answer, not
+    /// an error — the one a read of a version never built must not give.
+    #[test]
+    fn a_file_in_neither_loaded_version_is_not_present_not_an_error() {
+        let cache = two_comparisons();
+
+        let result = diff_from_cache(
+            &cache,
+            &cache_key("crates", "itoa", "1.0.0"),
+            &cache_key("crates", "itoa", "2.0.0"),
+            "gone.rs",
+            None,
+            false,
+        )
+        .expect("both versions are loaded");
+
+        assert!(!result.is_diff);
+        assert_eq!(result.data, "File not present in either version.");
+    }
+
+    /// The whitespace choice reaches the renderer: a reformat reads as
+    /// removed and added lines exactly, and as context when ignored.
+    #[test]
+    fn a_read_passes_the_whitespace_choice_on() {
+        let cache = HashMap::from([
+            (
+                cache_key("crates", "fmt", "1.0.0"),
+                package(&[("src/lib.rs", "\tx=1;\n")]),
+            ),
+            (
+                cache_key("crates", "fmt", "2.0.0"),
+                package(&[("src/lib.rs", "    x = 1;\n")]),
+            ),
+        ]);
+        let read = |ignore_whitespace| {
+            diff_from_cache(
+                &cache,
+                &cache_key("crates", "fmt", "1.0.0"),
+                &cache_key("crates", "fmt", "2.0.0"),
+                "src/lib.rs",
+                None,
+                ignore_whitespace,
+            )
+            .expect("both versions are loaded")
+            .data
+        };
+
+        assert_eq!(
+            read(false),
+            "--- from/src/lib.rs\n+++ to/src/lib.rs\n- \tx=1;\n+     x = 1;"
+        );
+        let ignoring = read(true);
+        assert!(
+            !ignoring
+                .lines()
+                .skip(2)
+                .any(|line| line.starts_with('-') || line.starts_with('+')),
+            "nothing should read as changed: {ignoring}"
         );
     }
 

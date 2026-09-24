@@ -23,7 +23,7 @@ Four `#[wasm_bindgen]` entry points, driven from the app's diff worker:
 Extraction is cached per `registry:package:version` for the session and shared by `Rc`, so diffing
 A→B then B→C fetches B once. `build_diff_tree_for_package` is the call that establishes which pair
 `get_diff_for_path` reads, and it does so when it *finishes*: with two builds in flight, the active
-comparison is whichever downloaded last, not whichever was asked for last.
+comparison is whichever finished last, not whichever was asked for last.
 `get_diff_for_comparison` names its pair instead and reads both from the cache, so it is answered
 from its own versions however builds overlap. Either version not in the cache is an error. Prefer it;
 `get_diff_for_path` stays for callers that have not moved.

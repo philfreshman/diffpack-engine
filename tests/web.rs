@@ -103,6 +103,8 @@ async fn a_read_that_names_its_comparison_ignores_the_active_diff() {
     assert_ne!(active_lib_rs(), expected, "the two comparisons must differ");
 
     assert_eq!(lib_rs_in("1.0.11", "1.0.18"), Ok(expected));
+    // And for the comparison that is active, both reads agree.
+    assert_eq!(lib_rs_in("1.0.11", "1.0.14"), Ok(active_lib_rs()));
 }
 
 /// A version nothing was built from is an error that names it, not an empty
