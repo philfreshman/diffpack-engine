@@ -94,9 +94,7 @@ impl<'a> DiffTreeBuilder<'a> {
 
     pub fn build_tree(&self) -> DiffFileEntry {
         // 1. Identify added/removed files
-        let from_paths: HashSet<_> = self.from_files.keys().cloned().collect();
-        let to_paths: HashSet<_> = self.to_files.keys().cloned().collect();
-
+        //
         // Sorted, because rename detection is greedy in this order: the
         // first added path to clear the threshold claims a deleted file, and
         // an equal score goes to the first deleted path. Walking a `HashSet`
@@ -119,13 +117,7 @@ impl<'a> DiffTreeBuilder<'a> {
         let renames = self.detect_renames_optimized(&deleted, &added);
 
         // 3. Build tree structure
-        let tree = self.build_tree_structure(
-            &from_paths,
-            &to_paths,
-            &self.from_dirs,
-            &self.to_dirs,
-            &renames,
-        );
+        let tree = self.build_tree_structure(&renames);
 
         // 4. Compute statuses and counts
         self.compute_tree_stats(tree, &renames)
@@ -340,38 +332,46 @@ impl<'a> DiffTreeBuilder<'a> {
         unchanged as f64 / total as f64
     }
 
-    fn build_tree_structure(
-        &self,
-        from_paths: &HashSet<String>,
-        to_paths: &HashSet<String>,
-        from_dirs: &HashSet<String>,
-        to_dirs: &HashSet<String>,
-        renames: &HashMap<String, String>,
-    ) -> DiffFileEntry {
+    /// Files and directories are placed separately, because one path can be
+    /// both: `lib` a module in 1.0.0 and a folder holding `lib/index.js` in
+    /// 2.0.0 (#7). That is two things at one path, not one thing that changed
+    /// type, so each gets a node of its own and the two sit side by side under
+    /// the same parent, told apart by `type`. Settling on one type per path
+    /// was what lost the other: the file took the directory's children, which
+    /// the stats pass then never visited, and the directory never appeared —
+    /// or, the other way round, the file never did.
+    ///
+    /// Only a directory is ever a parent, and no path has two directories, so
+    /// hanging each node off its parent's path is still unambiguous.
+    fn build_tree_structure(&self, renames: &HashMap<String, String>) -> DiffFileEntry {
         // A rename's source path is not a file of its own: the new path stands
         // for both halves, carrying `oldPath` and the diff between them. Left
-        // in, it is the same file a second time, listed as a deletion.
+        // in, it is the same file a second time, listed as a deletion. Only
+        // the file goes — a directory now at the same path is another thing.
         let renamed_away: HashSet<&String> = renames.values().collect();
 
-        // Merge all paths
-        let mut all_paths = HashSet::new();
-        all_paths.extend(from_paths.iter().cloned());
-        all_paths.extend(to_paths.iter().cloned());
-        all_paths.extend(from_dirs.iter().cloned());
-        all_paths.extend(to_dirs.iter().cloned());
+        let files = self
+            .from_file_paths
+            .union(&self.to_file_paths)
+            .filter(|path| !renamed_away.contains(path))
+            .map(|path| (path, FileType::File));
+        let dirs = self
+            .from_dirs
+            .union(&self.to_dirs)
+            .map(|path| (path, FileType::Directory));
 
-        let mut nodes: HashMap<String, DiffFileEntry> = HashMap::new();
-        let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+        // Each node waits in its parent's list until the walk down from the
+        // root reaches that parent.
+        let mut children_map: HashMap<String, Vec<DiffFileEntry>> = HashMap::new();
 
-        for path in &all_paths {
-            if path == "/" || renamed_away.contains(path) {
+        for (path, file_type) in files.chain(dirs) {
+            if path == "/" {
                 continue;
             }
-            let file_type = self.resolve_file_type(path);
-
-            nodes.insert(
-                path.clone(),
-                DiffFileEntry {
+            children_map
+                .entry(Self::parent_path(path))
+                .or_default()
+                .push(DiffFileEntry {
                     path: path.clone(),
                     old_path: None,
                     file_type,
@@ -379,11 +379,7 @@ impl<'a> DiffTreeBuilder<'a> {
                     added: None,
                     removed: None,
                     children: Some(Vec::new()),
-                },
-            );
-
-            let parent = Self::parent_path(path);
-            children_map.entry(parent).or_default().push(path.clone());
+                });
         }
 
         let mut root = DiffFileEntry {
@@ -396,7 +392,7 @@ impl<'a> DiffTreeBuilder<'a> {
             children: Some(Vec::new()),
         };
 
-        root.children = Some(Self::build_children("/", &mut nodes, &mut children_map));
+        root.children = Some(self.build_children("/", &mut children_map));
         root
     }
 
@@ -431,31 +427,42 @@ impl<'a> DiffTreeBuilder<'a> {
     }
 
     fn build_children(
+        &self,
         parent: &str,
-        nodes: &mut HashMap<String, DiffFileEntry>,
-        children_map: &mut HashMap<String, Vec<String>>,
+        children_map: &mut HashMap<String, Vec<DiffFileEntry>>,
     ) -> Vec<DiffFileEntry> {
-        let mut child_paths = match children_map.remove(parent) {
-            Some(paths) => paths,
+        let mut nodes = match children_map.remove(parent) {
+            Some(nodes) => nodes,
             None => return Vec::new(),
         };
 
-        child_paths.sort();
-        let mut children = Vec::with_capacity(child_paths.len());
+        // By path, and where a file and a directory share one, the old
+        // version's first — the `-` before the `+`, so the pair reads the way
+        // a diff does whichever way round the two versions were picked. Only
+        // equal paths get as far as the set lookups.
+        nodes.sort_by(|a, b| {
+            a.path
+                .cmp(&b.path)
+                .then_with(|| self.sibling_rank(a).cmp(&self.sibling_rank(b)))
+        });
+        let mut children = Vec::with_capacity(nodes.len());
 
-        for child_path in child_paths {
-            let mut node = match nodes.remove(&child_path) {
-                Some(entry) => entry,
-                None => continue,
-            };
+        for mut node in nodes {
+            // A file never has children, even when a directory shares its
+            // path: those are the directory's, and the directory is its own
+            // node.
+            if matches!(node.file_type, FileType::File) {
+                children.push(node);
+                continue;
+            }
 
-            let nested = Self::build_children(&child_path, nodes, children_map);
+            let nested = self.build_children(&node.path, children_map);
 
             // A directory with nothing under it is not a change anyone can
             // read — and after a rename out of it, that is exactly what its
             // former home is left as. Pruning bottom-up, an emptied chain of
             // directories goes with it.
-            if matches!(node.file_type, FileType::Directory) && nested.is_empty() {
+            if nested.is_empty() {
                 continue;
             }
 
@@ -464,6 +471,20 @@ impl<'a> DiffTreeBuilder<'a> {
         }
 
         children
+    }
+
+    /// Orders the two nodes at a path that is a file on one side and a
+    /// directory on the other: the one the old version had comes first. The
+    /// type breaks the tie when a malformed archive has both in one version,
+    /// so the order never falls to a hash map's.
+    fn sibling_rank(&self, node: &DiffFileEntry) -> (bool, bool) {
+        let is_dir = matches!(node.file_type, FileType::Directory);
+        let in_from = if is_dir {
+            self.from_dirs.contains(&node.path)
+        } else {
+            self.from_file_paths.contains(&node.path)
+        };
+        (!in_from, is_dir)
     }
 
     fn parent_path(path: &str) -> String {
@@ -638,22 +659,6 @@ impl<'a> DiffTreeBuilder<'a> {
             .collect()
     }
 
-    // Takes no directory sets: a path neither file map carries can only be an
-    // interior node of the tree, and the only interior nodes are directories.
-    // The `from_dirs`/`to_dirs` this used to consult agreed with that fallback
-    // on both arms, so they told it nothing.
-    fn resolve_file_type(&self, path: &str) -> FileType {
-        if let Some(entry) = self
-            .from_files
-            .get(path)
-            .or_else(|| self.to_files.get(path))
-        {
-            return entry.file_type.clone();
-        }
-
-        FileType::Directory
-    }
-
     fn file_content<'m>(
         &self,
         entries: &'m HashMap<String, FileMapEntry>,
@@ -671,6 +676,11 @@ impl<'a> DiffTreeBuilder<'a> {
 
 /// Supported API: the door to the tree builder. `DiffTreeBuilder` itself stays
 /// private — a consumer gets the tree, not the machinery that assembles it.
+///
+/// A path is one node, with one exception a consumer has to allow for: a path
+/// that is a file in one version and a directory in the other is two sibling
+/// nodes with the same `path`, told apart by `type`, the old version's first.
+/// A file node never has anything under it.
 pub fn build_diff_tree(
     from_files: &HashMap<String, FileMapEntry>,
     to_files: &HashMap<String, FileMapEntry>,
@@ -1179,20 +1189,6 @@ mod tests {
         assert_eq!(DiffTreeBuilder::parent_path(""), "/");
     }
 
-    /// A path present on either side takes that side's type; one known only
-    /// as an ancestor is a directory.
-    #[test]
-    fn a_paths_type_comes_from_whichever_side_has_it() {
-        let from = HashMap::from([("a.rs".to_string(), file("x"))]);
-        let to = HashMap::from([("docs".to_string(), dir()), ("b.rs".to_string(), file("y"))]);
-        let b = DiffTreeBuilder::new(&from, &to, 0.75, false);
-
-        assert!(matches!(b.resolve_file_type("a.rs"), FileType::File));
-        assert!(matches!(b.resolve_file_type("b.rs"), FileType::File));
-        assert!(matches!(b.resolve_file_type("docs"), FileType::Directory));
-        assert!(matches!(b.resolve_file_type("src"), FileType::Directory));
-    }
-
     /// A directory has no content to diff, so it must not answer with the
     /// empty string a file's content would be compared against.
     #[test]
@@ -1403,6 +1399,209 @@ mod tests {
         let tree = tree(&[("old/a.rs", REPORTER)], &[("new/a.rs", REPORTER)]);
         assert_eq!(all_paths(&tree), ["/", "new", "new/a.rs"]);
         assert_eq!(node_at(&tree, "new").status, DiffStatus::Added);
+    }
+
+    // ---- a file in one version, a directory in the other ------------------
+
+    /// Every node beneath the root, in tree order, one line each the way #7
+    /// tabulates them: path, type, status and counts, indented two spaces per
+    /// level, so the indent is what says which directory a node hangs off. A
+    /// node the stats pass never reached reads `(no counts)`, not `+0 -0`.
+    fn rows(root: &DiffFileEntry) -> Vec<String> {
+        fn walk(node: &DiffFileEntry, depth: usize, out: &mut Vec<String>) {
+            for child in node.children.iter().flatten() {
+                let counts = match (child.added, child.removed) {
+                    (Some(added), Some(removed)) => format!("+{added} -{removed}"),
+                    _ => "(no counts)".to_string(),
+                };
+                out.push(format!(
+                    "{}{} {:?} {:?} {}",
+                    "  ".repeat(depth),
+                    child.path,
+                    child.file_type,
+                    child.status,
+                    counts
+                ));
+                walk(child, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, 0, &mut out);
+        out
+    }
+
+    /// Every file node with something under it — which no file should have.
+    fn files_with_children(node: &DiffFileEntry) -> Vec<&str> {
+        let mut out = Vec::new();
+        if matches!(node.file_type, FileType::File)
+            && node.children.as_ref().is_some_and(|c| !c.is_empty())
+        {
+            out.push(node.path.as_str());
+        }
+        for child in node.children.iter().flatten() {
+            out.extend(files_with_children(child));
+        }
+        out
+    }
+
+    /// `lib` is a module in 1.0.0 and a folder holding `lib/index.js` in
+    /// 2.0.0 — the two packages from #7. `lib` and `lib/index.js` share no
+    /// line, so there is no rename between them to find.
+    const LIB: &str = "module.exports = require('./impl');\n";
+    const LIB_INDEX: &str = "export * from './impl.js';\n";
+    const PACKAGE_JSON: &str = "{ \"name\": \"pkg\" }\n";
+
+    /// 1.0.0, as `extract_archive_bytes` gives it.
+    fn lib_a_file() -> HashMap<String, FileMapEntry> {
+        HashMap::from([
+            ("lib".to_string(), file(LIB)),
+            ("package.json".to_string(), file(PACKAGE_JSON)),
+        ])
+    }
+
+    /// 2.0.0, as `extract_archive_bytes` gives it: the directory carries an
+    /// entry of its own at `lib`.
+    fn lib_a_directory() -> HashMap<String, FileMapEntry> {
+        HashMap::from([
+            ("lib".to_string(), dir()),
+            ("lib/index.js".to_string(), file(LIB_INDEX)),
+            ("package.json".to_string(), file(PACKAGE_JSON)),
+        ])
+    }
+
+    #[test]
+    fn a_file_that_becomes_a_directory_is_a_removed_file_and_an_added_directory() {
+        let tree = build_diff_tree(&lib_a_file(), &lib_a_directory(), 0.75, false);
+
+        assert_eq!(
+            rows(&tree),
+            [
+                "lib File Removed +0 -1",
+                "lib Directory Added +1 -0",
+                "  lib/index.js File Added +1 -0",
+                "package.json File Unchanged +0 -0",
+            ]
+        );
+        assert!(files_with_children(&tree).is_empty());
+        assert_eq!(tree.status, DiffStatus::Modified);
+        assert_eq!((tree.added, tree.removed), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn a_directory_that_becomes_a_file_is_a_removed_directory_and_an_added_file() {
+        let tree = build_diff_tree(&lib_a_directory(), &lib_a_file(), 0.75, false);
+
+        assert_eq!(
+            rows(&tree),
+            [
+                "lib Directory Removed +0 -1",
+                "  lib/index.js File Removed +0 -1",
+                "lib File Added +1 -0",
+                "package.json File Unchanged +0 -0",
+            ]
+        );
+        assert!(files_with_children(&tree).is_empty());
+        assert_eq!(tree.status, DiffStatus::Modified);
+        assert_eq!((tree.added, tree.removed), (Some(1), Some(1)));
+    }
+
+    /// The same collision a level down, with `src/lib` a directory only by
+    /// implication — it has no entry of its own, just `src/lib/x.js` — and an
+    /// unchanged sibling beside it. `src` is in both versions, so it is
+    /// modified, and it sums both halves of the pair.
+    #[test]
+    fn a_collision_below_the_root_keeps_both_nodes_under_their_directory() {
+        let old = [("src/lib", LIB), ("src/util.js", "util\n")];
+        let new = [("src/lib/x.js", LIB_INDEX), ("src/util.js", "util\n")];
+
+        let forward = tree(&old, &new);
+        assert_eq!(
+            rows(&forward),
+            [
+                "src Directory Modified +1 -1",
+                "  src/lib File Removed +0 -1",
+                "  src/lib Directory Added +1 -0",
+                "    src/lib/x.js File Added +1 -0",
+                "  src/util.js File Unchanged +0 -0",
+            ]
+        );
+        assert!(files_with_children(&forward).is_empty());
+
+        let backward = tree(&new, &old);
+        assert_eq!(
+            rows(&backward),
+            [
+                "src Directory Modified +1 -1",
+                "  src/lib Directory Removed +0 -1",
+                "    src/lib/x.js File Removed +0 -1",
+                "  src/lib File Added +1 -0",
+                "  src/util.js File Unchanged +0 -0",
+            ]
+        );
+        assert!(files_with_children(&backward).is_empty());
+    }
+
+    /// The commonest way a module becomes a folder: the file moves in as the
+    /// folder's `index.js`. A rename's source is not listed, the new path
+    /// standing for it — but that takes the old *file* at `lib` out of the
+    /// tree, not the directory that now shares its name.
+    #[test]
+    fn a_file_moved_into_a_directory_of_its_own_name_is_a_rename_beneath_it() {
+        let old = [("lib", REPORTER), ("package.json", PACKAGE_JSON)];
+        let new = [("lib/index.js", REPORTER), ("package.json", PACKAGE_JSON)];
+
+        let forward = tree(&old, &new);
+        assert_eq!(
+            rows(&forward),
+            [
+                "lib Directory Added +0 -0",
+                "  lib/index.js File Renamed +0 -0",
+                "package.json File Unchanged +0 -0",
+            ]
+        );
+        assert_eq!(
+            node_at(&forward, "lib/index.js").old_path.as_deref(),
+            Some("lib")
+        );
+
+        // The other way round the directory is emptied by the rename and
+        // goes, and the file at `lib` is where its content went.
+        let backward = tree(&new, &old);
+        assert_eq!(
+            rows(&backward),
+            [
+                "lib File Renamed +0 -0",
+                "package.json File Unchanged +0 -0",
+            ]
+        );
+        assert_eq!(
+            node_at(&backward, "lib").old_path.as_deref(),
+            Some("lib/index.js")
+        );
+    }
+
+    /// What diffpack-server stores and the app renders: two siblings with the
+    /// same `path`, told apart by `type`, the old version's first. Each is an
+    /// ordinary node — nothing about either one's shape is new.
+    #[test]
+    fn a_file_and_a_directory_at_one_path_serialise_as_two_siblings() {
+        let tree = build_diff_tree(&lib_a_file(), &lib_a_directory(), 0.75, false);
+        let json = serde_json::to_value(&tree).unwrap();
+        let lib: Vec<&serde_json::Value> = json["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|child| child["path"] == "lib")
+            .collect();
+
+        assert_eq!(lib.len(), 2);
+        assert_eq!(lib[0]["type"], "file");
+        assert_eq!(lib[0]["status"], "removed");
+        assert!(lib[0]["children"].as_array().is_none_or(Vec::is_empty));
+        assert_eq!(lib[1]["type"], "directory");
+        assert_eq!(lib[1]["status"], "added");
+        assert_eq!(lib[1]["children"][0]["path"], "lib/index.js");
+        assert_eq!(lib[1]["children"][0]["status"], "added");
     }
 
     // ---- the free function ------------------------------------------------

@@ -49,6 +49,11 @@ rather than from a `similar` of its own that might resolve to a different versio
 
 `DiffTreeBuilder` and everything under extraction stay private; `build_diff_tree` is the door.
 
+The tree it returns has one node per path, with one exception to allow for: a path that is a file
+in one version and a directory in the other — `lib` becoming `lib/index.js` — is two sibling nodes
+with the same `path`, told apart by `type`, the old version's first. A file node never has anything
+under it.
+
 ## The sibling repositories
 
 Three repositories carry diffpack, and they are meant to be checked out side by side under one
