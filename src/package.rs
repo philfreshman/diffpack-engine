@@ -172,8 +172,27 @@ fn js_error(err: String) -> JsValue {
 /// Supported API: exposed for `diffpack-server`. [`build_go_zip_url`] is the
 /// usual way in, and [`archive_source`] the usual way to that.
 pub fn escape_go_module_path(pkg: &str) -> String {
-    let mut escaped = String::with_capacity(pkg.len());
-    for ch in pkg.chars() {
+    go_case_escape(pkg)
+}
+
+/// The version half of the same escaping. The proxy protocol case-encodes the
+/// version exactly as it does the module path, so a pre-release such as
+/// `v1.0.0-RC1` is served as `v1.0.0-!r!c1`; requesting it verbatim is an
+/// error from the proxy. Most versions are lower-case already and come back
+/// unchanged.
+///
+/// Supported API: exposed for `diffpack-server` alongside
+/// [`escape_go_module_path`]. [`build_go_zip_url`] applies both.
+pub fn escape_go_version(version: &str) -> String {
+    go_case_escape(version)
+}
+
+/// The proxy's case-encoding, shared by the module path and the version so the
+/// two cannot drift apart: each ASCII uppercase letter becomes `!` followed by
+/// its lowercase form, and everything else is left as it is.
+fn go_case_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
         if ch.is_ascii_uppercase() {
             escaped.push('!');
             escaped.push(ch.to_ascii_lowercase());
@@ -186,14 +205,16 @@ pub fn escape_go_module_path(pkg: &str) -> String {
 
 /// The proxy's zip for one module version. There is no registry lookup in
 /// front of it: the path is the module's own, escaped by
-/// [`escape_go_module_path`], and the version is Go's `v`-prefixed spelling.
+/// [`escape_go_module_path`], and the version is Go's `v`-prefixed spelling,
+/// escaped by [`escape_go_version`].
 ///
 /// Supported API: exposed for `diffpack-server`. [`archive_source`] gives this
 /// same URL for `go`, and is the lookup to reach for.
 pub fn build_go_zip_url(pkg: &str, version: &str) -> String {
     format!(
-        "https://proxy.golang.org/{}/@v/{version}.zip",
-        escape_go_module_path(pkg)
+        "https://proxy.golang.org/{}/@v/{}.zip",
+        escape_go_module_path(pkg),
+        escape_go_version(version)
     )
 }
 
@@ -895,6 +916,27 @@ mod tests {
         );
     }
 
+    /// The version is case-encoded like the path: a mixed-case pre-release
+    /// requested verbatim is an error from the proxy.
+    #[test]
+    fn a_go_version_escapes_every_uppercase_letter() {
+        assert_eq!(escape_go_version("v1.0.0-RC1"), "v1.0.0-!r!c1");
+        assert_eq!(escape_go_version("v3.2.1"), "v3.2.1");
+        assert_eq!(
+            escape_go_version("v0.0.0-20240101000000-AbCdEf123456"),
+            "v0.0.0-20240101000000-!ab!cd!ef123456"
+        );
+        assert_eq!(escape_go_version(""), "");
+    }
+
+    #[test]
+    fn a_go_zip_url_escapes_the_uppercase_in_its_version_too() {
+        assert_eq!(
+            build_go_zip_url("github.com/Masterminds/semver", "v1.0.0-RC1"),
+            "https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip"
+        );
+    }
+
     #[test]
     fn an_npm_tarball_url_uses_the_unscoped_name_for_the_file() {
         assert_eq!(
@@ -956,6 +998,14 @@ mod tests {
         assert_eq!(
             archive_source("go", "github.com/Masterminds/semver", "v3.2.1").unwrap(),
             archive("https://proxy.golang.org/github.com/!masterminds/semver/@v/v3.2.1.zip")
+        );
+    }
+
+    #[test]
+    fn a_go_archive_escapes_the_uppercase_in_its_version() {
+        assert_eq!(
+            archive_source("go", "github.com/Masterminds/semver", "v1.0.0-RC1").unwrap(),
+            archive("https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip")
         );
     }
 

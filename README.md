@@ -40,7 +40,7 @@ output, is a breaking change rather than an internal one.
 | `unpack_archive(registry, pkg, version, bytes)` | The fetched archive unpacked to the path → entry map, wrapper directory removed. The only correct way to unpack a Go module zip from outside the crate |
 | `build_tarball_url(registry, pkg, version)` | The archive URL for npm (scoped names included) and crates.io. `archive_source` covers every registry |
 | `select_pypi_sdist_url(&[PyPiUrl])` | The sdist-then-wheel preference order, over a parsed `PyPiResponse`. `choose_archive` does the parse too |
-| `escape_go_module_path`, `build_go_zip_url`, `strip_go_module_root` | The Go module proxy's path escaping, its zip URL, and the `<module>@<version>/` prefix every entry carries. `strip_go_module_root` needs a map `extract_archive_bytes` cannot give it — use `unpack_archive` |
+| `escape_go_module_path`, `escape_go_version`, `build_go_zip_url`, `strip_go_module_root` | The Go module proxy's case-escaping of the path and of the version (`v1.0.0-RC1` is served as `v1.0.0-!r!c1`), its zip URL with both applied, and the `<module>@<version>/` prefix every entry carries. `strip_go_module_root` needs a map `extract_archive_bytes` cannot give it — use `unpack_archive` |
 | `extract_archive_bytes(bytes)`, `build_diff_tree(..)` | Extraction and the tree builder, which `examples/bench.rs` also drives |
 
 `archive_source`, `choose_archive` and `unpack_archive` are one lookup, and none of them makes a
