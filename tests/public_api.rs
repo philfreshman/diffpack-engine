@@ -14,9 +14,9 @@
 
 use diffpack_engine::{
     archive_source, build_go_zip_url, build_patch, build_tarball_url, choose_archive,
-    escape_go_module_path, get_diff_content, select_pypi_sdist_url, strip_go_module_root,
-    unpack_archive, whitespace_mode, ArchiveSource, FileMapEntry, FileType, Patch, PyPiResponse,
-    PyPiUrl, WhitespaceMode,
+    escape_go_module_path, escape_go_version, get_diff_content, select_pypi_sdist_url,
+    strip_go_module_root, unpack_archive, whitespace_mode, ArchiveSource, FileMapEntry, FileType,
+    Patch, PyPiResponse, PyPiUrl, WhitespaceMode,
 };
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
@@ -205,6 +205,26 @@ fn a_go_module_path_is_escaped_into_a_proxy_zip_url() {
     assert_eq!(
         build_go_zip_url("github.com/Masterminds/semver", "v3.2.1"),
         "https://proxy.golang.org/github.com/!masterminds/semver/@v/v3.2.1.zip"
+    );
+}
+
+/// The proxy case-encodes the version as well as the path, so a mixed-case
+/// pre-release is requested in its escaped spelling, through the lookup as
+/// much as through the builder.
+#[test]
+fn a_go_version_is_escaped_into_a_proxy_zip_url_too() {
+    let url = "https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip";
+
+    assert_eq!(escape_go_version("v1.0.0-RC1"), "v1.0.0-!r!c1");
+    assert_eq!(
+        build_go_zip_url("github.com/Masterminds/semver", "v1.0.0-RC1"),
+        url
+    );
+    assert_eq!(
+        archive_source("go", "github.com/Masterminds/semver", "v1.0.0-RC1").unwrap(),
+        ArchiveSource::Archive {
+            url: url.to_string()
+        }
     );
 }
 
