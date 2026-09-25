@@ -13,12 +13,13 @@ use zip::ZipArchive;
 
 use crate::types::{FileMapEntry, FileType};
 
-/// What `pypi.org/pypi/{pkg}/{version}/json` answers, reduced to the field
+/// What PyPI's per-version metadata document — the [`ArchiveSource::Listing`]
+/// that [`archive_source`] gives for `pypi` — answers, reduced to the field
 /// that decides which archive to fetch. Every other key in that payload is
 /// ignored, so the shape survives PyPI adding to it.
 ///
 /// Supported API: `diffpack-server` parses PyPI metadata into this and hands
-/// `urls` to [`select_pypi_sdist_url`].
+/// `urls` to [`select_pypi_sdist_url`]. [`choose_archive`] does both steps.
 #[derive(Deserialize)]
 pub struct PyPiResponse {
     pub urls: Vec<PyPiUrl>,
@@ -35,38 +36,163 @@ pub struct PyPiUrl {
     pub packagetype: String,
 }
 
+// ---- one archive lookup per registry ------------------------------------
+//
+// Every per-registry question about one version's archive — where it is, how
+// to read its URL out of a listing, how to unpack it — answered without a
+// network call. The caller does the fetching: the browser through `fetch`
+// below, `diffpack-server` with its own client, size cap and errors. The
+// order is always
+//
+//     archive_source → fetch → (choose_archive → fetch, for a Listing only)
+//                    → unpack_archive
+//
+// Registries are named by string, as `build_tarball_url` and the
+// `#[wasm_bindgen]` functions name them; an unknown one is an `Err`.
+
+/// Where one version's archive is found, before anything is fetched.
+///
+/// Supported API: `diffpack-server` re-exports this as its own `ArchiveSource`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchiveSource {
+    /// The archive itself, at a URL built from the package and the version.
+    Archive { url: String },
+    /// A metadata document listing the version's files; read the archive's
+    /// URL out of it with [`choose_archive`].
+    Listing { url: String },
+}
+
+/// Where to fetch one version's archive from. npm, crates.io and Go serve it
+/// at a URL built from the name and the version, so the answer is the
+/// [`ArchiveSource::Archive`] itself. PyPI's is only discoverable from its
+/// per-version metadata, so the answer is the [`ArchiveSource::Listing`] to
+/// fetch first and hand to [`choose_archive`].
+///
+/// Supported API: the first step of a lookup, for `diffpack-server` and the
+/// browser alike.
+pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<ArchiveSource, String> {
+    match registry {
+        "npm" | "crates" => {
+            build_tarball_url(registry, pkg, version).map(|url| ArchiveSource::Archive { url })
+        }
+        "go" => Ok(ArchiveSource::Archive {
+            url: build_go_zip_url(pkg, version),
+        }),
+        // The only place the PyPI metadata URL is written out.
+        "pypi" => Ok(ArchiveSource::Listing {
+            url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
+        }),
+        _ => Err(unsupported_registry(registry)),
+    }
+}
+
+/// The archive URL, read out of the body of the [`ArchiveSource::Listing`]
+/// that [`archive_source`] gave. For PyPI that is the metadata JSON, parsed as
+/// a [`PyPiResponse`] and put through [`select_pypi_sdist_url`].
+///
+/// A registry whose source is an [`ArchiveSource::Archive`] has no listing, so
+/// asking it to choose is an error rather than a guess.
+///
+/// Supported API: the second step of a lookup, for a `Listing` only.
+pub fn choose_archive(registry: &str, listing: &str) -> Result<String, String> {
+    match registry {
+        "pypi" => {
+            let metadata: PyPiResponse = serde_json::from_str(listing)
+                .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
+            select_pypi_sdist_url(&metadata.urls)
+        }
+        "npm" | "crates" | "go" => Err(format!(
+            "Registry {registry} serves its archive directly; there is no listing to choose from"
+        )),
+        _ => Err(unsupported_registry(registry)),
+    }
+}
+
+/// One version's fetched archive, unpacked to the path → entry map the diff
+/// runs on, with whatever wrapper directory the registry puts around it
+/// removed.
+///
+/// For Go that wrapper is the module's `<module>@<version>/` prefix, which
+/// spans several path components and embeds the version: the archive is
+/// extracted without the usual single-root strip and then put through
+/// [`strip_go_module_root`], so no path carries the version. Every other
+/// registry goes through [`extract_archive_bytes`]. `pkg` and `version` are
+/// only read for Go.
+///
+/// Supported API: the last step of a lookup, and the only correct way to
+/// unpack a Go module zip from outside this crate.
+pub fn unpack_archive(
+    registry: &str,
+    pkg: &str,
+    version: &str,
+    bytes: &[u8],
+) -> Result<HashMap<String, FileMapEntry>, String> {
+    match registry {
+        "go" => {
+            let files = extract_archive_bytes_with(bytes, false)?;
+            Ok(strip_go_module_root(files, pkg, version))
+        }
+        "npm" | "crates" | "pypi" => extract_archive_bytes(bytes),
+        _ => Err(unsupported_registry(registry)),
+    }
+}
+
+fn unsupported_registry(registry: &str) -> String {
+    format!("Unsupported registry: {registry}")
+}
+
+/// The browser's lookup: the steps above, with `fetch` between them.
 pub async fn fetch_and_extract_package(
     registry: &str,
     pkg: &str,
     version: &str,
 ) -> Result<HashMap<String, FileMapEntry>, JsValue> {
-    if registry == "go" {
-        let bytes = fetch_bytes(&build_go_zip_url(pkg, version)).await?;
-        let files =
-            extract_archive_bytes_with(&bytes, false).map_err(|err| JsValue::from_str(&err))?;
-        return Ok(strip_go_module_root(files, pkg, version));
-    }
-
-    let bytes = match registry {
-        "pypi" => fetch_pypi_sdist_bytes(pkg, version).await?,
-        _ => {
-            let url =
-                build_tarball_url(registry, pkg, version).map_err(|err| JsValue::from_str(&err))?;
-            fetch_bytes(&url).await?
+    let archive_url = match archive_source(registry, pkg, version).map_err(js_error)? {
+        ArchiveSource::Archive { url } => url,
+        ArchiveSource::Listing { url } => {
+            let listing = fetch_bytes(&url).await?;
+            let listing = std::str::from_utf8(&listing).map_err(|err| {
+                JsValue::from_str(&format!("Failed to parse PyPI metadata: {err}"))
+            })?;
+            choose_archive(registry, listing).map_err(js_error)?
         }
     };
-    extract_archive_bytes(&bytes).map_err(|err| JsValue::from_str(&err))
+    let bytes = fetch_bytes(&archive_url).await?;
+    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+}
+
+fn js_error(err: String) -> JsValue {
+    JsValue::from_str(&err)
 }
 
 /// The module proxy serves lower-cased paths, escaping each uppercase letter as
 /// `!` followed by its lowercase form, so `Masterminds` becomes `!masterminds`.
 /// Requesting the unescaped path is a 404.
 ///
-/// Supported API: exposed for `diffpack-server`, which does not fetch Go
-/// modules yet. [`build_go_zip_url`] is the usual way in.
+/// Supported API: exposed for `diffpack-server`. [`build_go_zip_url`] is the
+/// usual way in, and [`archive_source`] the usual way to that.
 pub fn escape_go_module_path(pkg: &str) -> String {
-    let mut escaped = String::with_capacity(pkg.len());
-    for ch in pkg.chars() {
+    go_case_escape(pkg)
+}
+
+/// The version half of the same escaping. The proxy protocol case-encodes the
+/// version exactly as it does the module path, so a pre-release such as
+/// `v1.0.0-RC1` is served as `v1.0.0-!r!c1`; requesting it verbatim is an
+/// error from the proxy. Most versions are lower-case already and come back
+/// unchanged.
+///
+/// Supported API: exposed for `diffpack-server` alongside
+/// [`escape_go_module_path`]. [`build_go_zip_url`] applies both.
+pub fn escape_go_version(version: &str) -> String {
+    go_case_escape(version)
+}
+
+/// The proxy's case-encoding, shared by the module path and the version so the
+/// two cannot drift apart: each ASCII uppercase letter becomes `!` followed by
+/// its lowercase form, and everything else is left as it is.
+fn go_case_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
         if ch.is_ascii_uppercase() {
             escaped.push('!');
             escaped.push(ch.to_ascii_lowercase());
@@ -79,14 +205,16 @@ pub fn escape_go_module_path(pkg: &str) -> String {
 
 /// The proxy's zip for one module version. There is no registry lookup in
 /// front of it: the path is the module's own, escaped by
-/// [`escape_go_module_path`], and the version is Go's `v`-prefixed spelling.
+/// [`escape_go_module_path`], and the version is Go's `v`-prefixed spelling,
+/// escaped by [`escape_go_version`].
 ///
-/// Supported API: exposed for `diffpack-server`, which does not fetch Go
-/// modules yet.
+/// Supported API: exposed for `diffpack-server`. [`archive_source`] gives this
+/// same URL for `go`, and is the lookup to reach for.
 pub fn build_go_zip_url(pkg: &str, version: &str) -> String {
     format!(
-        "https://proxy.golang.org/{}/@v/{version}.zip",
-        escape_go_module_path(pkg)
+        "https://proxy.golang.org/{}/@v/{}.zip",
+        escape_go_module_path(pkg),
+        escape_go_version(version)
     )
 }
 
@@ -101,8 +229,15 @@ pub fn build_go_zip_url(pkg: &str, version: &str) -> String {
 /// when that prefix is absent, so a zip that does not follow the convention is
 /// still usable. Directories a surviving path implies are put back.
 ///
-/// Supported API: exposed for `diffpack-server`, which does not fetch Go
-/// modules yet. Takes the map [`extract_archive_bytes`] produces.
+/// Supported API: exposed for `diffpack-server`, but [`unpack_archive`] is the
+/// way to use it.
+///
+/// **Warning:** this needs a map whose top-level directory has *not* been
+/// stripped, and [`extract_archive_bytes`] cannot give you one — it strips the
+/// lone `github.com/` directory, so the prefix is never found, the fallback
+/// runs, and every path comes out as `y@v1.2.3/...` with the version still in
+/// it. `unpack_archive("go", ..)` extracts without that strip and then calls
+/// this.
 pub fn strip_go_module_root(
     files: HashMap<String, FileMapEntry>,
     pkg: &str,
@@ -133,6 +268,8 @@ pub fn strip_go_module_root(
 /// `select_pypi_sdist_url` is the half of that this crate can settle.
 ///
 /// Supported API: `diffpack-server` builds fetch URLs with this.
+/// [`archive_source`] covers every registry, PyPI and Go included, and is the
+/// lookup to reach for.
 pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<String, String> {
     match registry {
         "npm" => {
@@ -176,16 +313,6 @@ fn fetch_with_str(url: &str) -> Result<js_sys::Promise, JsValue> {
     }
 }
 
-async fn fetch_pypi_sdist_bytes(pkg: &str, version: &str) -> Result<Vec<u8>, JsValue> {
-    let metadata_url = format!("https://pypi.org/pypi/{pkg}/{version}/json");
-    let metadata_bytes = fetch_bytes(&metadata_url).await?;
-    let metadata: PyPiResponse = serde_json::from_slice(&metadata_bytes)
-        .map_err(|err| JsValue::from_str(&format!("Failed to parse PyPI metadata: {err}")))?;
-
-    let sdist_url = select_pypi_sdist_url(&metadata.urls).map_err(|err| JsValue::from_str(&err))?;
-    fetch_bytes(&sdist_url).await
-}
-
 /// The artifact to diff, in preference order: a source distribution this crate
 /// can open, else a wheel it can open, else either of them in a format it
 /// cannot — a `.tar.bz2` sdist is still a better answer than none, and the
@@ -195,7 +322,8 @@ async fn fetch_pypi_sdist_bytes(pkg: &str, version: &str) -> Result<Vec<u8>, JsV
 /// Wheels are built, not sources, so an sdist is preferred wherever one exists.
 ///
 /// Supported API: `diffpack-server` picks PyPI archives with this rather than
-/// repeating the order.
+/// repeating the order. [`choose_archive`] parses the metadata and applies
+/// this in one step.
 pub fn select_pypi_sdist_url(urls: &[PyPiUrl]) -> Result<String, String> {
     let mut sdist_supported = None;
     let mut sdist_fallback = None;
@@ -242,6 +370,9 @@ fn is_supported_archive_url(url: &str) -> bool {
 /// `.zip`/`.whl`, or a bare tar — to the path → entry map the diff runs on,
 /// with a single top-level directory stripped. Pure Rust, so it is also what
 /// `examples/bench.rs` times natively.
+///
+/// Not for a Go module zip: see [`strip_go_module_root`]. [`unpack_archive`]
+/// picks the right extraction for every registry.
 pub fn extract_archive_bytes(bytes: &[u8]) -> Result<HashMap<String, FileMapEntry>, String> {
     extract_archive_bytes_with(bytes, true)
 }
@@ -785,6 +916,27 @@ mod tests {
         );
     }
 
+    /// The version is case-encoded like the path: a mixed-case pre-release
+    /// requested verbatim is an error from the proxy.
+    #[test]
+    fn a_go_version_escapes_every_uppercase_letter() {
+        assert_eq!(escape_go_version("v1.0.0-RC1"), "v1.0.0-!r!c1");
+        assert_eq!(escape_go_version("v3.2.1"), "v3.2.1");
+        assert_eq!(
+            escape_go_version("v0.0.0-20240101000000-AbCdEf123456"),
+            "v0.0.0-20240101000000-!ab!cd!ef123456"
+        );
+        assert_eq!(escape_go_version(""), "");
+    }
+
+    #[test]
+    fn a_go_zip_url_escapes_the_uppercase_in_its_version_too() {
+        assert_eq!(
+            build_go_zip_url("github.com/Masterminds/semver", "v1.0.0-RC1"),
+            "https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip"
+        );
+    }
+
     #[test]
     fn an_npm_tarball_url_uses_the_unscoped_name_for_the_file() {
         assert_eq!(
@@ -809,6 +961,169 @@ mod tests {
     fn an_unknown_registry_has_no_tarball_url() {
         assert_eq!(
             build_tarball_url("maven", "guava", "33.0.0").unwrap_err(),
+            "Unsupported registry: maven"
+        );
+    }
+
+    // ---- the archive lookup -----------------------------------------------
+
+    fn archive(url: &str) -> ArchiveSource {
+        ArchiveSource::Archive {
+            url: url.to_string(),
+        }
+    }
+
+    #[test]
+    fn npm_crates_and_go_serve_the_archive_itself() {
+        assert_eq!(
+            archive_source("npm", "left-pad", "1.3.0").unwrap(),
+            archive("https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz")
+        );
+        assert_eq!(
+            archive_source("crates", "serde", "1.0.200").unwrap(),
+            archive("https://static.crates.io/crates/serde/serde-1.0.200.crate")
+        );
+    }
+
+    #[test]
+    fn a_scoped_npm_archive_drops_the_scope_from_the_file_name() {
+        assert_eq!(
+            archive_source("npm", "@types/node", "20.1.0").unwrap(),
+            archive("https://registry.npmjs.org/@types/node/-/node-20.1.0.tgz")
+        );
+    }
+
+    #[test]
+    fn a_go_archive_escapes_the_uppercase_in_its_module_path() {
+        assert_eq!(
+            archive_source("go", "github.com/Masterminds/semver", "v3.2.1").unwrap(),
+            archive("https://proxy.golang.org/github.com/!masterminds/semver/@v/v3.2.1.zip")
+        );
+    }
+
+    #[test]
+    fn a_go_archive_escapes_the_uppercase_in_its_version() {
+        assert_eq!(
+            archive_source("go", "github.com/Masterminds/semver", "v1.0.0-RC1").unwrap(),
+            archive("https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip")
+        );
+    }
+
+    /// The metadata URL is written out in `src/` exactly once, in
+    /// `archive_source`; `tests/public_api.rs` pins it byte for byte. What is
+    /// checked here is that it is a listing, on PyPI, for this version.
+    #[test]
+    fn pypi_is_found_through_its_metadata_listing() {
+        match archive_source("pypi", "requests", "2.32.3").unwrap() {
+            ArchiveSource::Listing { url } => {
+                assert!(url.starts_with("https://pypi.org/"), "{url}");
+                assert!(url.ends_with("/requests/2.32.3/json"), "{url}");
+            }
+            other => panic!("expected a listing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_registry_has_no_archive_source() {
+        assert_eq!(
+            archive_source("maven", "guava", "33.0.0").unwrap_err(),
+            "Unsupported registry: maven"
+        );
+    }
+
+    #[test]
+    fn a_pypi_listing_yields_its_preferred_archive() {
+        let listing = r#"{
+            "info": {"name": "x"},
+            "urls": [
+                {"packagetype": "bdist_wheel", "url": "https://files/x-1.0-py3-none-any.whl"},
+                {"packagetype": "sdist", "url": "https://files/x-1.0.tar.gz"}
+            ]
+        }"#;
+        assert_eq!(
+            choose_archive("pypi", listing).unwrap(),
+            "https://files/x-1.0.tar.gz"
+        );
+    }
+
+    /// The same messages the browser has always reported for these two.
+    #[test]
+    fn a_pypi_listing_that_is_malformed_or_empty_is_an_error() {
+        assert!(choose_archive("pypi", "not json")
+            .unwrap_err()
+            .starts_with("Failed to parse PyPI metadata: "));
+        assert_eq!(
+            choose_archive("pypi", r#"{"urls": []}"#).unwrap_err(),
+            "No downloadable artifacts found for PyPI package"
+        );
+    }
+
+    #[test]
+    fn a_registry_without_a_listing_cannot_choose_from_one() {
+        for registry in ["npm", "crates", "go"] {
+            let err = choose_archive(registry, r#"{"urls": []}"#).unwrap_err();
+            assert!(err.contains("no listing"), "{registry}: {err}");
+        }
+        assert_eq!(
+            choose_archive("maven", "{}").unwrap_err(),
+            "Unsupported registry: maven"
+        );
+    }
+
+    /// The bug `unpack_archive` exists to fix: `extract_archive_bytes` strips
+    /// the lone `github.com/` directory, after which `strip_go_module_root`
+    /// cannot find its prefix and the version stays in every path.
+    #[test]
+    fn a_go_module_zip_unpacks_without_its_versioned_prefix() {
+        let entries = vec![
+            (
+                "github.com/x/y@v1.2.3/go.mod".to_string(),
+                b"module github.com/x/y\n".to_vec(),
+            ),
+            (
+                "github.com/x/y@v1.2.3/src/lib.go".to_string(),
+                b"package y\n".to_vec(),
+            ),
+        ];
+        let zip = zip_bytes(&entries);
+
+        let files = unpack_archive("go", "github.com/x/y", "v1.2.3", &zip).unwrap();
+        assert_eq!(sorted_keys(&files), ["go.mod", "src", "src/lib.go"]);
+        assert_eq!(files["src/lib.go"].content, "package y\n");
+
+        let composed = strip_go_module_root(
+            extract_archive_bytes(&zip).unwrap(),
+            "github.com/x/y",
+            "v1.2.3",
+        );
+        assert_eq!(
+            sorted_keys(&composed),
+            [
+                "y@v1.2.3",
+                "y@v1.2.3/go.mod",
+                "y@v1.2.3/src",
+                "y@v1.2.3/src/lib.go"
+            ],
+            "the public helpers composed are what unpack_archive replaces"
+        );
+    }
+
+    #[test]
+    fn every_other_registry_unpacks_with_the_single_root_stripped() {
+        let entries = mixed_entries();
+        let archive = gzip(&tar_bytes(&entries));
+        let expected = sorted_keys(&extract_archive_bytes(&archive).unwrap());
+        for registry in ["npm", "crates", "pypi"] {
+            let files = unpack_archive(registry, "pkg", "1.0.0", &archive).unwrap();
+            assert_eq!(sorted_keys(&files), expected, "{registry}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_registry_cannot_unpack() {
+        let archive = gzip(&tar_bytes(&mixed_entries()));
+        assert_eq!(
+            unpack_archive("maven", "guava", "33.0.0", &archive).unwrap_err(),
             "Unsupported registry: maven"
         );
     }

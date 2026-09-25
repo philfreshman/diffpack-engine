@@ -11,38 +11,64 @@ with its history intact.
 
 ## What it exports
 
-Three `#[wasm_bindgen]` entry points, all driven from the app's diff worker:
+Four `#[wasm_bindgen]` entry points, driven from the app's diff worker:
 
 | Function | Does |
 | --- | --- |
 | `prefetch_package(registry, pkg, version)` | Fetch and extract one version into the session cache |
 | `build_diff_tree_for_package(registry, pkg, from, to, similarity_threshold, ignore_whitespace)` | Diff two versions, return the file tree with statuses, counts and detected renames |
+| `get_diff_for_comparison(registry, pkg, from, to, filename, old_path, ignore_whitespace)` | The unified diff for one path in the comparison it names |
 | `get_diff_for_path(filename, old_path, ignore_whitespace)` | The unified diff for one path in the active comparison |
 
 Extraction is cached per `registry:package:version` for the session and shared by `Rc`, so diffing
 A→B then B→C fetches B once. `build_diff_tree_for_package` is the call that establishes which pair
-`get_diff_for_path` reads.
+`get_diff_for_path` reads, and it does so when it *finishes*: with two builds in flight, the active
+comparison is whichever finished last, not whichever was asked for last.
+`get_diff_for_comparison` names its pair instead and reads both from the cache, so it is answered
+from its own versions however builds overlap. Either version not in the cache is an error. Prefer it;
+`get_diff_for_path` stays for callers that have not moved.
 
 ### The Rust surface
 
 The crate is also a plain Cargo dependency. [`diffpack-server`](https://github.com/philfreshman/diffpack-server)
 computes diffs with it natively — no wasm, no browser — and the items below are supported API for
-that consumer: a change to any of their signatures, or to `get_diff_content`'s output, is a breaking
-change rather than an internal one.
+that consumer: a change to any of their signatures, or to `get_diff_content`'s or `build_patch`'s
+output, is a breaking change rather than an internal one.
 
 | Item | Does |
 | --- | --- |
 | `get_diff_content(filename, from, to, ignore_whitespace)` | The unified diff for one file. Its **output** is the contract, not just its signature — see below |
+| `build_patch(filename, from, to, ignore_whitespace)` → `Patch` | One file's view from its content in each version (`None` where a version has no file there): a sentence when neither has it, every line against `/dev/null` when one side does, the file itself when the two are byte-identical, `get_diff_content` otherwise. `get_diff_for_path` renders through it. Its output is the contract too |
 | `whitespace_mode(ignore_whitespace)` → `WhitespaceMode` | The `Exact`/`IgnoreAll` choice, for a caller configuring its own `TextDiff` |
-| `build_tarball_url(registry, pkg, version)` | The archive URL for npm (scoped names included) and crates.io |
-| `select_pypi_sdist_url(&[PyPiUrl])` | The sdist-then-wheel preference order, over a parsed `PyPiResponse` |
-| `escape_go_module_path`, `build_go_zip_url`, `strip_go_module_root` | The Go module proxy's path escaping, its zip URL, and the `<module>@<version>/` prefix every entry carries |
+| `archive_source(registry, pkg, version)` → `ArchiveSource` | Where one version's archive is: `Archive { url }` for npm, crates.io and Go, `Listing { url }` (the metadata to fetch first) for PyPI |
+| `choose_archive(registry, listing)` | The archive URL read out of a fetched `Listing` — PyPI's metadata JSON, through `select_pypi_sdist_url` |
+| `unpack_archive(registry, pkg, version, bytes)` | The fetched archive unpacked to the path → entry map, wrapper directory removed. The only correct way to unpack a Go module zip from outside the crate |
+| `build_tarball_url(registry, pkg, version)` | The archive URL for npm (scoped names included) and crates.io. `archive_source` covers every registry |
+| `select_pypi_sdist_url(&[PyPiUrl])` | The sdist-then-wheel preference order, over a parsed `PyPiResponse`. `choose_archive` does the parse too |
+| `escape_go_module_path`, `escape_go_version`, `build_go_zip_url`, `strip_go_module_root` | The Go module proxy's case-escaping of the path and of the version (`v1.0.0-RC1` is served as `v1.0.0-!r!c1`), its zip URL with both applied, and the `<module>@<version>/` prefix every entry carries. `strip_go_module_root` needs a map `extract_archive_bytes` cannot give it — use `unpack_archive` |
 | `extract_archive_bytes(bytes)`, `build_diff_tree(..)` | Extraction and the tree builder, which `examples/bench.rs` also drives |
+
+`archive_source`, `choose_archive` and `unpack_archive` are one lookup, and none of them makes a
+network call — fetching is left to the caller, so each fetch keeps its own size cap and its own
+error:
+
+```text
+archive_source → fetch → (choose_archive → fetch, for a Listing only) → unpack_archive
+```
+
+The browser's `fetch_and_extract_package` is those steps with `fetch` between them. Registries are
+named by string (`npm`, `crates`, `pypi`, `go`); an unknown one is an `Err`.
 
 `get_diff_content` renders a `--- from/{f}` / `+++ to/{f}` header, then one line per change as sign
 (`-`, `+` or a space), a space, and the line. The tree's counts are taken from the same lines, so a
 second implementation that renders them differently makes the tree and the file view disagree about
 the same file. That is the reason these are exported rather than rewritten on the far side.
+
+`build_patch` is the whole file view around that diff, and `Patch { data, is_diff }` is what it
+returns. `is_diff` is `Patch`'s serialised name as well — the shape diffpack-server stores — while
+`get_diff_for_path` renames it to `isDiff` for the browser. An added or removed file is split on
+`\n`, so one ending in a newline gets an empty last `+`/`-` line that the tree does not count; that
+is current behaviour, kept as it is until it can be changed in this one place.
 
 `WhitespaceMode` is `similar`'s, re-exported here so a dependent takes the type from this crate
 rather than from a `similar` of its own that might resolve to a different version.
@@ -64,7 +90,7 @@ parent directory — the layout the app's `DIFFPACK_ENGINE_LOCAL=../diffpack-eng
 
 | Repo | Sibling path | Remote | What it is |
 | --- | --- | --- | --- |
-| diffpack | `../diffpack` | `philfreshman/diffpack` | The web app at [diffpack.io](https://www.diffpack.io) — TanStack Start, the UI, the registry search, the worker that calls the three functions above. It consumes the published npm package and never builds this crate. |
+| diffpack | `../diffpack` | `philfreshman/diffpack` | The web app at [diffpack.io](https://www.diffpack.io) — TanStack Start, the UI, the registry search, the worker that calls the functions above. It consumes the published npm package and never builds this crate. |
 | diffpack-engine | *this checkout* | `philfreshman/diffpack-engine` | This crate. |
 | diffpack-server | `../diffpack-server` | `philfreshman/diffpack-server` | An MCP server that computes diffs with this crate as a **native** Cargo dependency, pinned by git tag. It consumes the Rust surface above; nothing here or in the app depends on it. |
 
@@ -189,8 +215,14 @@ measurement: `opt-level = 's'` with `lto = true` is a 587 KB module that halved 
 515 KB `opt-level = 'z'` build.
 
 ```bash
-cargo run --release --example bench -- --help
+cargo run --release --example bench -- <from-archive> <to-archive> [--registry NAME] [--ignore-whitespace] [--runs N]
 ```
+
+Without `--registry` both archives go through `extract_archive_bytes`, as they always have. With
+it they go through `unpack_archive` for that registry, the way the page unpacks them — which a Go
+module zip needs, or every path keeps its `<module>@<version>/` prefix and the two versions share
+none. The module path and version are read out of each zip, so `--registry go a.zip b.zip` is the
+whole command.
 
 ## Releasing
 

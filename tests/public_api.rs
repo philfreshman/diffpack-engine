@@ -13,11 +13,13 @@
 //! would have to match — not every branch a second time.
 
 use diffpack_engine::{
-    build_go_zip_url, build_tarball_url, escape_go_module_path, get_diff_content,
-    select_pypi_sdist_url, strip_go_module_root, whitespace_mode, FileMapEntry, FileType,
-    PyPiResponse, PyPiUrl, WhitespaceMode,
+    archive_source, build_go_zip_url, build_patch, build_tarball_url, choose_archive,
+    escape_go_module_path, escape_go_version, get_diff_content, select_pypi_sdist_url,
+    strip_go_module_root, unpack_archive, whitespace_mode, ArchiveSource, FileMapEntry, FileType,
+    Patch, PyPiResponse, PyPiUrl, WhitespaceMode,
 };
 use std::collections::HashMap;
+use std::io::{Cursor, Write};
 
 fn file(content: &str) -> FileMapEntry {
     FileMapEntry {
@@ -56,6 +58,65 @@ fn ignoring_whitespace_turns_a_reformat_into_context() {
         get_diff_content("a.rs", from, to, false),
         "--- from/a.rs\n+++ to/a.rs\n  fn main() {\n- \tlet x=1;\n+     let x = 1;\n  }"
     );
+}
+
+// ---- one file's view ---------------------------------------------------
+
+/// The four cases `build_patch` decides for itself, written out literally. The
+/// fifth, a changed file, is `get_diff_content`'s output and is pinned above.
+///
+/// The added and removed files end in `\n` on purpose: each line is split on
+/// `\n`, so both get an empty last `+`/`-` line that the tree's counts do not
+/// see. That is today's output, and it is pinned as such — changing it is a
+/// change to make once, here, with every renderer calling this one function.
+#[test]
+fn a_file_view_is_reachable_and_unchanged_in_every_case() {
+    assert_eq!(
+        build_patch("gone.rs", None, None, false),
+        Patch {
+            data: "File not present in either version.".to_string(),
+            is_diff: false,
+        }
+    );
+    assert_eq!(
+        build_patch("src/new.rs", None, Some("one\ntwo\n"), false),
+        Patch {
+            data: "--- /dev/null\n+++ to/src/new.rs\n+ one\n+ two\n+ ".to_string(),
+            is_diff: true,
+        }
+    );
+    assert_eq!(
+        build_patch("src/old.rs", Some("one\ntwo\n"), None, false),
+        Patch {
+            data: "--- from/src/old.rs\n+++ /dev/null\n- one\n- two\n- ".to_string(),
+            is_diff: true,
+        }
+    );
+    assert_eq!(
+        build_patch("src/lib.rs", Some("same\n"), Some("same\n"), false),
+        Patch {
+            data: "same\n".to_string(),
+            is_diff: false,
+        }
+    );
+}
+
+/// The shape diffpack-server stores in `patches.json`, snake_case and all. It
+/// re-exports this type in place of its own, so a renamed field would be a
+/// stored file it can no longer read.
+#[test]
+fn a_patch_serialises_under_its_rust_field_names() {
+    let patch = Patch {
+        data: "--- /dev/null\n+++ to/a.rs\n+ only".to_string(),
+        is_diff: true,
+    };
+    let json = serde_json::json!({
+        "data": "--- /dev/null\n+++ to/a.rs\n+ only",
+        "is_diff": true,
+    });
+
+    assert_eq!(serde_json::to_value(&patch).unwrap(), json);
+    assert_eq!(serde_json::from_value::<Patch>(json).unwrap(), patch);
 }
 
 // ---- the whitespace choice --------------------------------------------
@@ -147,6 +208,26 @@ fn a_go_module_path_is_escaped_into_a_proxy_zip_url() {
     );
 }
 
+/// The proxy case-encodes the version as well as the path, so a mixed-case
+/// pre-release is requested in its escaped spelling, through the lookup as
+/// much as through the builder.
+#[test]
+fn a_go_version_is_escaped_into_a_proxy_zip_url_too() {
+    let url = "https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip";
+
+    assert_eq!(escape_go_version("v1.0.0-RC1"), "v1.0.0-!r!c1");
+    assert_eq!(
+        build_go_zip_url("github.com/Masterminds/semver", "v1.0.0-RC1"),
+        url
+    );
+    assert_eq!(
+        archive_source("go", "github.com/Masterminds/semver", "v1.0.0-RC1").unwrap(),
+        ArchiveSource::Archive {
+            url: url.to_string()
+        }
+    );
+}
+
 /// The intermediate directory is put back: the tree builder needs the
 /// directories a path implies, and `src/` is only implied once the versioned
 /// prefix is gone.
@@ -170,4 +251,76 @@ fn the_versioned_module_root_is_stripped_from_every_path() {
     assert_eq!(paths, ["go.mod", "src", "src/lib.go"]);
     assert_eq!(stripped["src/lib.go"].content, "package y\n");
     assert!(matches!(stripped["src"].file_type, FileType::Directory));
+}
+
+// ---- the archive lookup --------------------------------------------------
+
+/// Matched on rather than compared, which is what holds the variants and their
+/// field in place: a dependent re-exporting the enum has to be able to take
+/// it apart.
+#[test]
+fn an_archive_source_says_whether_to_fetch_the_archive_or_a_listing() {
+    match archive_source("crates", "serde", "1.0.200").unwrap() {
+        ArchiveSource::Archive { url } => assert_eq!(
+            url,
+            "https://static.crates.io/crates/serde/serde-1.0.200.crate"
+        ),
+        other => panic!("expected an archive, got {other:?}"),
+    }
+    match archive_source("pypi", "requests", "2.32.3").unwrap() {
+        ArchiveSource::Listing { url } => {
+            assert_eq!(url, "https://pypi.org/pypi/requests/2.32.3/json")
+        }
+        other => panic!("expected a listing, got {other:?}"),
+    }
+    assert_eq!(
+        archive_source("maven", "guava", "33.0.0").unwrap_err(),
+        "Unsupported registry: maven"
+    );
+}
+
+#[test]
+fn an_archive_url_is_chosen_out_of_a_pypi_listing() {
+    let listing = r#"{
+        "urls": [
+            {"packagetype": "bdist_wheel", "url": "https://files/x-1.0-py3-none-any.whl"},
+            {"packagetype": "sdist", "url": "https://files/x-1.0.tar.gz"}
+        ]
+    }"#;
+
+    assert_eq!(
+        choose_archive("pypi", listing).unwrap(),
+        "https://files/x-1.0.tar.gz"
+    );
+    assert!(choose_archive("crates", listing).is_err());
+}
+
+/// A module zip exactly as the proxy lays it out: every entry under
+/// `<module>@<version>/`, with no directory entries of its own.
+fn go_module_zip() -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (path, content) in [
+        ("github.com/x/y@v1.2.3/go.mod", "module github.com/x/y\n"),
+        ("github.com/x/y@v1.2.3/src/lib.go", "package y\n"),
+    ] {
+        writer.start_file(path, options).unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// The whole Go path from outside the crate, from the zip's bytes. Composing
+/// the public helpers by hand leaves `y@v1.2.3/` on every path, which a diff
+/// reads as every file removed and added again.
+#[test]
+fn a_go_module_zip_unpacks_to_paths_without_the_version() {
+    let files = unpack_archive("go", "github.com/x/y", "v1.2.3", &go_module_zip()).unwrap();
+
+    let mut paths: Vec<&str> = files.keys().map(String::as_str).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["go.mod", "src", "src/lib.go"]);
+    assert_eq!(files["src/lib.go"].content, "package y\n");
+    assert!(matches!(files["src"].file_type, FileType::Directory));
 }
