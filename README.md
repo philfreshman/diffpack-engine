@@ -210,8 +210,14 @@ measurement: `opt-level = 's'` with `lto = true` is a 587 KB module that halved 
 515 KB `opt-level = 'z'` build.
 
 ```bash
-cargo run --release --example bench -- --help
+cargo run --release --example bench -- <from-archive> <to-archive> [--registry NAME] [--ignore-whitespace] [--runs N]
 ```
+
+Without `--registry` both archives go through `extract_archive_bytes`, as they always have. With
+it they go through `unpack_archive` for that registry, the way the page unpacks them — which a Go
+module zip needs, or every path keeps its `<module>@<version>/` prefix and the two versions share
+none. The module path and version are read out of each zip, so `--registry go a.zip b.zip` is the
+whole command.
 
 ## Releasing
 
