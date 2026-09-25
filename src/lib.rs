@@ -17,7 +17,8 @@ pub use crate::package::{
     ArchiveSource, PyPiResponse, PyPiUrl,
 };
 /// The per-file view — neither version, added, removed, byte-identical or
-/// changed — that `get_diff_for_path` renders for the browser.
+/// changed — that `get_diff_for_comparison` and `get_diff_for_path` render for
+/// the browser.
 ///
 /// Supported API: diffpack-server renders its file views through the same
 /// function, so the two cannot drift apart on what a view shows.
@@ -83,7 +84,7 @@ fn file_content<'a>(files: &'a HashMap<String, FileMapEntry>, path: &str) -> Opt
     })
 }
 
-/// What `get_diff_for_path` hands JS: a [`Patch`] under the camelCase names
+/// What the file-view functions hand JS: a [`Patch`] under the camelCase names
 /// the app reads (`{ data, isDiff }`). Private, and only a rename — which file
 /// view to show is [`build_patch`]'s decision, not this layer's.
 #[derive(Serialize)]
@@ -100,6 +101,39 @@ impl From<Patch> for DiffResult {
             is_diff: patch.is_diff,
         }
     }
+}
+
+/// One file's view between two cached versions, found by their cache keys and
+/// rendered by [`build_patch`].
+///
+/// A version missing from the cache is an error rather than a version without
+/// the file: nothing was built from it, so there is no answer to give, and
+/// "not present in either version" would describe a package nobody looked at.
+fn diff_from_cache(
+    cache: &HashMap<String, PackageFiles>,
+    from_key: &str,
+    to_key: &str,
+    filename: &str,
+    old_path: Option<&str>,
+    ignore_whitespace: bool,
+) -> Result<Patch, String> {
+    let loaded = |key: &str| {
+        cache
+            .get(key)
+            .ok_or_else(|| format!("{key} has not been loaded; build its diff first"))
+    };
+    let from_files = loaded(from_key)?;
+    let to_files = loaded(to_key)?;
+
+    let from_content = file_content(from_files, old_path.unwrap_or(filename));
+    let to_content = file_content(to_files, filename);
+
+    Ok(build_patch(
+        filename,
+        from_content,
+        to_content,
+        ignore_whitespace,
+    ))
 }
 
 #[wasm_bindgen]
@@ -152,31 +186,64 @@ pub fn get_diff_for_path(
     let active = ACTIVE_DIFF
         .with(|state| state.borrow().clone())
         .ok_or_else(|| JsValue::from_str("No active diff context"))?;
-    let from_key = active.from_key;
-    let to_key = active.to_key;
 
-    // Two `Rc` clones let go of the cache's `RefCell` borrow; the file
-    // contents themselves are read in place, not copied out first.
-    let (from_files, to_files) = EXTRACTION_CACHE.with(|cache| {
-        let cache = cache.borrow();
-        (cache.get(&from_key).cloned(), cache.get(&to_key).cloned())
-    });
+    // The same read `get_diff_for_comparison` makes, over the pair the active
+    // diff names, so the two cannot drift apart. A build sets the active diff
+    // only once both versions are cached, and nothing evicts them, so the
+    // not-loaded error cannot happen here.
+    let result = EXTRACTION_CACHE
+        .with(|cache| {
+            diff_from_cache(
+                &cache.borrow(),
+                &active.from_key,
+                &active.to_key,
+                &filename,
+                old_path.as_deref(),
+                ignore_whitespace,
+            )
+        })
+        .map_err(|message| JsValue::from_str(&message))?;
+    Ok(serde_wasm_bindgen::to_value(&DiffResult::from(result))?)
+}
 
-    let from_path = old_path.as_deref().unwrap_or(&filename);
-    let from_content = from_files
-        .as_deref()
-        .and_then(|files| file_content(files, from_path));
-    let to_content = to_files
-        .as_deref()
-        .and_then(|files| file_content(files, &filename));
+/// One file's diff in the comparison it names, not in whichever comparison was
+/// built last.
+///
+/// [`get_diff_for_path`] reads from the active diff, which a build replaces
+/// when it *finishes*. With two builds in flight, the one that finishes last
+/// wins, and a read for the other is answered from the wrong pair of versions.
+/// Naming the comparison takes the active diff out of the read: both versions
+/// are looked up in the extraction cache by their own keys, so builds can run
+/// in any order and a read still gets its own files.
+///
+/// Both versions must have been built (or prefetched) first. One that is not
+/// in the cache is an error, never an empty diff.
+#[wasm_bindgen]
+pub fn get_diff_for_comparison(
+    registry: String,
+    pkg: String,
+    from: String,
+    to: String,
+    filename: String,
+    old_path: Option<String>,
+    ignore_whitespace: bool,
+) -> Result<JsValue, JsValue> {
+    let from_key = cache_key(&registry, &pkg, &from);
+    let to_key = cache_key(&registry, &pkg, &to);
 
-    let result = DiffResult::from(build_patch(
-        &filename,
-        from_content,
-        to_content,
-        ignore_whitespace,
-    ));
-    Ok(serde_wasm_bindgen::to_value(&result)?)
+    let result = EXTRACTION_CACHE
+        .with(|cache| {
+            diff_from_cache(
+                &cache.borrow(),
+                &from_key,
+                &to_key,
+                &filename,
+                old_path.as_deref(),
+                ignore_whitespace,
+            )
+        })
+        .map_err(|message| JsValue::from_str(&message))?;
+    Ok(serde_wasm_bindgen::to_value(&DiffResult::from(result))?)
 }
 
 #[cfg(test)]
@@ -250,5 +317,179 @@ mod tests {
                 "isDiff": true,
             })
         );
+    }
+
+    fn package(files: &[(&str, &str)]) -> PackageFiles {
+        Rc::new(
+            files
+                .iter()
+                .map(|(path, content)| (path.to_string(), file(content)))
+                .collect(),
+        )
+    }
+
+    /// Two comparisons of one crate in the cache at once, the way the app
+    /// leaves them after switching between them.
+    fn two_comparisons() -> HashMap<String, PackageFiles> {
+        HashMap::from([
+            (
+                cache_key("crates", "itoa", "1.0.0"),
+                package(&[("src/lib.rs", "one\n")]),
+            ),
+            (
+                cache_key("crates", "itoa", "2.0.0"),
+                package(&[("src/lib.rs", "two\n")]),
+            ),
+            (
+                cache_key("crates", "itoa", "3.0.0"),
+                package(&[("src/lib.rs", "three\n")]),
+            ),
+        ])
+    }
+
+    /// Whichever comparison was built last, a read names its own two versions
+    /// and is answered from them.
+    #[test]
+    fn a_read_is_answered_from_the_versions_it_names() {
+        let cache = two_comparisons();
+
+        let first = diff_from_cache(
+            &cache,
+            &cache_key("crates", "itoa", "1.0.0"),
+            &cache_key("crates", "itoa", "2.0.0"),
+            "src/lib.rs",
+            None,
+            false,
+        )
+        .expect("both versions are loaded");
+        let second = diff_from_cache(
+            &cache,
+            &cache_key("crates", "itoa", "1.0.0"),
+            &cache_key("crates", "itoa", "3.0.0"),
+            "src/lib.rs",
+            None,
+            false,
+        )
+        .expect("both versions are loaded");
+
+        assert_eq!(
+            first.data,
+            "--- from/src/lib.rs\n+++ to/src/lib.rs\n- one\n+ two"
+        );
+        assert_eq!(
+            second.data,
+            "--- from/src/lib.rs\n+++ to/src/lib.rs\n- one\n+ three"
+        );
+    }
+
+    /// A rename is read from its old path on the old side.
+    #[test]
+    fn a_renamed_file_is_read_from_its_old_path_in_the_old_version() {
+        let cache = HashMap::from([
+            (
+                cache_key("npm", "left-pad", "1.0.0"),
+                package(&[("index.js", "old\n")]),
+            ),
+            (
+                cache_key("npm", "left-pad", "2.0.0"),
+                package(&[("lib/index.js", "new\n")]),
+            ),
+        ]);
+
+        let result = diff_from_cache(
+            &cache,
+            &cache_key("npm", "left-pad", "1.0.0"),
+            &cache_key("npm", "left-pad", "2.0.0"),
+            "lib/index.js",
+            Some("index.js"),
+            false,
+        )
+        .expect("both versions are loaded");
+
+        assert_eq!(
+            result.data,
+            "--- from/lib/index.js\n+++ to/lib/index.js\n- old\n+ new"
+        );
+    }
+
+    /// Both versions loaded, and the file in neither: that is an answer, not
+    /// an error — the one a read of a version never built must not give.
+    #[test]
+    fn a_file_in_neither_loaded_version_is_not_present_not_an_error() {
+        let cache = two_comparisons();
+
+        let result = diff_from_cache(
+            &cache,
+            &cache_key("crates", "itoa", "1.0.0"),
+            &cache_key("crates", "itoa", "2.0.0"),
+            "gone.rs",
+            None,
+            false,
+        )
+        .expect("both versions are loaded");
+
+        assert!(!result.is_diff);
+        assert_eq!(result.data, "File not present in either version.");
+    }
+
+    /// The whitespace choice reaches the renderer: a reformat reads as
+    /// removed and added lines exactly, and as context when ignored.
+    #[test]
+    fn a_read_passes_the_whitespace_choice_on() {
+        let cache = HashMap::from([
+            (
+                cache_key("crates", "fmt", "1.0.0"),
+                package(&[("src/lib.rs", "\tx=1;\n")]),
+            ),
+            (
+                cache_key("crates", "fmt", "2.0.0"),
+                package(&[("src/lib.rs", "    x = 1;\n")]),
+            ),
+        ]);
+        let read = |ignore_whitespace| {
+            diff_from_cache(
+                &cache,
+                &cache_key("crates", "fmt", "1.0.0"),
+                &cache_key("crates", "fmt", "2.0.0"),
+                "src/lib.rs",
+                None,
+                ignore_whitespace,
+            )
+            .expect("both versions are loaded")
+            .data
+        };
+
+        assert_eq!(
+            read(false),
+            "--- from/src/lib.rs\n+++ to/src/lib.rs\n- \tx=1;\n+     x = 1;"
+        );
+        let ignoring = read(true);
+        assert!(
+            !ignoring
+                .lines()
+                .skip(2)
+                .any(|line| line.starts_with('-') || line.starts_with('+')),
+            "nothing should read as changed: {ignoring}"
+        );
+    }
+
+    /// A version that was never built is not a version without the file: it
+    /// is a read nothing can answer, and saying "not present" would be a lie.
+    #[test]
+    fn a_version_not_loaded_is_an_error_not_an_absent_file() {
+        let cache = two_comparisons();
+        let missing = cache_key("crates", "itoa", "9.9.9");
+
+        let error = diff_from_cache(
+            &cache,
+            &cache_key("crates", "itoa", "1.0.0"),
+            &missing,
+            "src/lib.rs",
+            None,
+            false,
+        )
+        .expect_err("9.9.9 was never loaded");
+
+        assert!(error.contains(&missing), "error names the version: {error}");
     }
 }
