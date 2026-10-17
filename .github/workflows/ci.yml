@@ -1,22 +1,11 @@
 name: CI
 
-# `development` is the integration branch: feature PRs target it, and `main`
-# takes a single `development` -> `main` PR per release. Both branches are
-# listed on both events, so the suite gates every PR and runs again on the
-# merge commit each branch ends up with — including the `main` one a `v*` tag
-# is cut from.
-#
-# These names are load-bearing twice over: every job below is a required check
-# on `development`, and Renovate's automerge waits on them. A branch that is
-# not listed here reports no checks at all, so its PRs sit unmergeable rather
-# than failing.
 on:
   pull_request:
     branches: [main, development]
   push:
     branches: [main, development]
 
-# A force-push or a second commit makes the run in flight irrelevant.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -25,21 +14,9 @@ permissions:
   contents: read
 
 env:
-  # Pinned, not `latest`. wasm-pack carries the wasm-bindgen CLI that generates
-  # the JS glue, so its version is part of the module's output: v0.1.1 built
-  # here at 0.15.0 is 595,134 bytes where a 0.14.0 build of the same commit is
-  # 591,273, with a correspondingly different `diffpack_engine.js`. Left
-  # floating, a future release picks up a new wasm-pack and ships a materially
-  # different module with nothing in the repo to explain it. Bump this
-  # deliberately.
   WASM_PACK_VERSION: 0.15.0
 
 jobs:
-  # `cargo fmt --check` needs no compile at all, so a formatting failure is
-  # reported in seconds rather than after the crate and its dependency tree
-  # have been built. `--all` covers `examples/` and `tests/` as well as `src/`.
-  #
-  # When this fails: `cargo fmt --all`, and commit.
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -50,19 +27,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # The lint gate. Shares the `fmt` job's reason for existing — it is cheap and
-  # it fails for reasons that have nothing to do with the tests — but it needs a
-  # full compile, so it is its own job rather than a step on `fmt`.
-  #
-  # `--all-targets` reaches `tests/` and `examples/bench.rs`, matching what
-  # `cargo test` builds. `-D warnings` is what makes it a gate: without it
-  # clippy reports and exits 0.
-  #
-  # `.githooks/pre-commit` runs this same command, so this job should only ever
-  # fail for a commit that was pushed with the hook disabled or uninstalled.
-  #
-  # When this fails: `cargo clippy --all-targets --all-features --fix`, then
-  # read what is left over.
   clippy:
     name: clippy
     runs-on: ubuntu-latest
@@ -74,12 +38,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Licences, RUSTSEC advisories, yanked crates and dependency sources, per
-  # `deny.toml`. This is the check Renovate's automerge runs into: a dependency
-  # PR that introduces a copyleft licence, a git dependency or an advisory
-  # fails here before it can merge itself.
-  #
-  # Also `.githooks/pre-commit`, which is why the command is spelled the same.
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
@@ -91,15 +49,6 @@ jobs:
           tool: cargo-deny
       - run: cargo deny --all-features check
 
-  # Overlaps `deny` above — both read the RustSec advisory database — but
-  # cargo-audit is the one with `--deny warnings`, which fails on unmaintained
-  # and unsound crates as well as on vulnerabilities. Two jobs rather than one
-  # so the summary says which kind of problem it is.
-  #
-  # `--no-yanked` is not a weakening: `deny.toml` sets `yanked = "deny"`, so the
-  # job above covers it. cargo-audit's own yanked check updates the git
-  # crates.io index, which is minutes of wall clock for a check already being
-  # made.
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
@@ -111,13 +60,6 @@ jobs:
           tool: cargo-audit
       - run: cargo audit --deny warnings --no-yanked
 
-  # The unit tests over the engine: extraction, path normalisation, the URL
-  # builders, rename detection, the tree's statuses and counts, and the
-  # serialised shape TypeScript reads. They compile for the host rather than
-  # for `wasm32`, so they need no browser and no wasm build. `examples/bench.rs`
-  # carries its own tests too (`test = true` in `Cargo.toml`), and
-  # `tests/public_api.rs` links the crate as a dependent does to hold the Rust
-  # surface in place — which is why this is not `--lib`.
   test:
     name: cargo test
     runs-on: ubuntu-latest
@@ -127,19 +69,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
-  # The `#[wasm_bindgen]` entry points, which the host-side tests above cannot
-  # reach: constructing a `JsValue` off `wasm32` aborts the process. This is
-  # `tests/web.rs` under `wasm-pack test`, in a real headless Chrome, against
-  # real crates.io archives.
-  #
-  # It matters more here than it did in diffpack, where these signatures were
-  # covered incidentally by the Playwright suite on every PR. Now that the app
-  # consumes a published version, this job is the last thing between a broken
-  # binding and a release.
   browser:
     name: wasm-pack test (chrome)
     runs-on: ubuntu-latest
-    # It downloads and diffs real archives from crates.io.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -147,17 +79,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # Not jetli/wasm-pack-action: its latest release still runs on Node 16.
-      # install-action is a composite action, so there is no Node runtime to age out.
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
       - run: wasm-pack test --headless --chrome
 
-  # Builds exactly what `release.yml` publishes, so a PR that breaks the
-  # wasm32 build or the generated bindings fails here rather than on a tag.
-  # The artifact is uploaded so the output of a PR can be inspected — and,
-  # in diffpack, linked against before the version is cut.
   build:
     name: wasm-pack build
     runs-on: ubuntu-latest
@@ -167,8 +93,6 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # Not jetli/wasm-pack-action: its latest release still runs on Node 16.
-      # install-action is a composite action, so there is no Node runtime to age out.
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
@@ -176,10 +100,6 @@ jobs:
       - name: wasm-pack build
         run: wasm-pack build --release --target web --scope philfreshman
 
-      # The module size is a standing concern — the release profile in
-      # `Cargo.toml` documents a 515 KB → 587 KB trade that bought a 2x
-      # speedup. Printing it on every run is what makes an accidental
-      # regression visible without anyone going looking.
       - name: Report module size
         run: |
           {

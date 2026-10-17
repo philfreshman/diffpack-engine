@@ -1,33 +1,12 @@
 use crate::core::get_diff_content;
 use serde::{Deserialize, Serialize};
 
-/// What one file's view shows: either a unified diff (`is_diff`) or text the
-/// viewer renders as it is — the file itself when both versions hold the same
-/// bytes, or a sentence when neither holds it at all.
-///
-/// Supported API. The field names are plain Rust on purpose: this is the shape
-/// diffpack-server stores in `patches.json`, so it can re-export this type in
-/// place of its own without renaming a stored field. The browser's
-/// `{ data, isDiff }` is a separate, private shape in `lib.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Patch {
     pub data: String,
     pub is_diff: bool,
 }
 
-/// Renders one file's view from its content in each version, `None` where that
-/// version has no file at the path.
-///
-/// Takes contents rather than file maps: what a version holds at a path —
-/// including whether a directory there counts as nothing — is the caller's
-/// lookup, not this function's. The browser and diffpack-server both render
-/// through here, so the two cannot drift apart on the four cases:
-///
-/// - in neither version: a sentence, not a diff;
-/// - added or removed: every line against `/dev/null`, split on `\n`, so a file
-///   ending in `\n` gets an empty last `+`/`-` line;
-/// - byte-identical: the file's own content, not a diff;
-/// - changed: [`get_diff_content`].
 pub fn build_patch(
     filename: &str,
     from: Option<&str>,
@@ -83,9 +62,6 @@ pub fn build_patch(
 mod tests {
     use super::*;
 
-    /// The path is in neither version — a stale link, or a file that only
-    /// ever existed as a rename's source. The viewer gets a sentence, not a
-    /// diff, so it does not try to render one.
     #[test]
     fn a_file_in_neither_version_is_not_a_diff() {
         let result = build_patch("gone.rs", None, None, false);
@@ -107,8 +83,6 @@ mod tests {
         assert_eq!(result.data, "--- from/a.rs\n+++ /dev/null\n- one\n- two");
     }
 
-    /// Byte-identical: the file itself, marked as not a diff, so the viewer
-    /// renders it as a file rather than as a hunk of all-context lines.
     #[test]
     fn an_unchanged_file_is_returned_as_its_own_content() {
         let result = build_patch("a.rs", Some("same\n"), Some("same\n"), false);
@@ -123,9 +97,6 @@ mod tests {
         assert_eq!(result.data, "--- from/a.rs\n+++ to/a.rs\n- one\n+ two");
     }
 
-    /// Whitespace-only changes still reach the diff renderer — the file is
-    /// not byte-identical — but in `ignore_whitespace` mode every line comes
-    /// back as context.
     #[test]
     fn a_reformat_is_all_context_when_whitespace_is_ignored() {
         let from = "fn main() {\n\tlet x=1;\n}\n";
@@ -146,8 +117,6 @@ mod tests {
         assert!(exact.data.contains("- \tlet x=1;"));
     }
 
-    /// A one-line file has no trailing newline to split on; the renderer must
-    /// still produce a header and exactly one line.
     #[test]
     fn a_file_without_a_trailing_newline_renders_one_line() {
         let result = build_patch("a.rs", None, Some("only"), false);

@@ -3,24 +3,9 @@ name = "diffpack-engine"
 version = "0.4.0"
 edition = "2021"
 description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI and Go, as a WebAssembly module."
-# `git+https://` and the `.git` suffix rather than the plain URL Cargo would
-# normally carry. This field is read by npm, not crates.io — wasm-pack copies
-# it into the generated `pkg/package.json` — and npm rewrote it to this form on
-# every publish, warning each time. The crate is not published to crates.io, so
-# npm's spelling is the only one that has a reader.
 repository = "git+https://github.com/philfreshman/diffpack-engine.git"
 
-# The crate is published to npm by `release.yml`, never to crates.io. Saying so
-# makes `cargo publish` refuse, and lets `cargo deny` treat this crate as
-# private — without it, deny fails the licence check on the one crate in the
-# graph that carries no `license` field.
 publish = false
-
-# wasm-pack copies these into the generated `pkg/package.json`, which is what
-# is published to npm as `@philfreshman/diffpack-engine`. The crate version
-# above is the single source of truth for the npm version too: a release is a
-# bump here
-# plus a matching `v*` tag, and `release.yml` checks the two agree.
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -42,21 +27,10 @@ zip = { version = "8.0", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
 
-# `cargo test` builds every example but runs an example's own tests only when
-# it is told to. `bench` carries the arg grammar and the tree fingerprint the
-# performance work is compared against, so its tests are part of the suite.
 [[example]]
 name = "bench"
 test = true
 
-# Built for speed, not size (#158). `opt-level = 'z'` with `lto = false` was
-# 515 KB and cost every compute phase: on `gdal-src 0.2.1+3.10.3 → 0.3.0+3.12.1`
-# in Chrome, median of 5, `build-tree-total` went 6516 ms → 3471 ms with this
-# profile (extract-both 1324 → 842 ms, diff-compute 5137 → 2509 ms), for a
-# 587 KB module (gzip 199 → 226 KB). `opt-level = 3` measured the same total
-# (3344 ms) for 692 KB, and a `wasm-opt -O3` pass on top of this changed nothing
-# (3514 ms), so neither was taken. `panic = "abort"` drops the unwinding tables
-# nothing in a wasm module can use.
 [profile.release]
 opt-level = 's'
 codegen-units = 1
