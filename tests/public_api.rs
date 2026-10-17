@@ -1,17 +1,3 @@
-//! The crate's surface as a dependent sees it.
-//!
-//! An integration test is its own crate: it links `diffpack-engine` the way
-//! `diffpack-server` does and can reach nothing that `lib.rs` has not made
-//! public. So the `use` below is half the assertion — an item that stops being
-//! exported fails the build here rather than at the far end of a version bump.
-//! The calls are the other half, and say what `use` alone cannot: that a
-//! signature is usable from outside. `PyPiUrl` and `FileMapEntry` both have to
-//! be constructible, or their functions are reachable in name only.
-//!
-//! `src/`'s own unit tests already cover what these functions decide, so what
-//! is asserted here is that reachability and the bytes a second implementation
-//! would have to match — not every branch a second time.
-
 use diffpack_engine::{
     archive_source, build_go_zip_url, build_patch, build_tarball_url, choose_archive,
     escape_go_module_path, escape_go_version, get_diff_content, select_pypi_sdist_url,
@@ -28,13 +14,6 @@ fn file(content: &str) -> FileMapEntry {
     }
 }
 
-// ---- the unified diff format ------------------------------------------
-
-/// The one item whose *output* is the contract rather than just its signature:
-/// diffpack-server renders file views from these bytes while the tree's counts
-/// come from the same lines, so a byte that moves here makes the two disagree
-/// about the same file. Written out literally rather than assembled, so it
-/// disagrees with the renderer if either side moves.
 #[test]
 fn the_unified_diff_format_is_reachable_and_unchanged() {
     assert_eq!(
@@ -43,8 +22,6 @@ fn the_unified_diff_format_is_reachable_and_unchanged() {
     );
 }
 
-/// The whitespace choice as its consequence rather than as a mapping: the same
-/// reformat read both ways.
 #[test]
 fn ignoring_whitespace_turns_a_reformat_into_context() {
     let from = "fn main() {\n\tlet x=1;\n}\n";
@@ -60,15 +37,6 @@ fn ignoring_whitespace_turns_a_reformat_into_context() {
     );
 }
 
-// ---- one file's view ---------------------------------------------------
-
-/// The four cases `build_patch` decides for itself, written out literally. The
-/// fifth, a changed file, is `get_diff_content`'s output and is pinned above.
-///
-/// The added and removed files end in `\n` on purpose: each line is split on
-/// `\n`, so both get an empty last `+`/`-` line that the tree's counts do not
-/// see. That is today's output, and it is pinned as such — changing it is a
-/// change to make once, here, with every renderer calling this one function.
 #[test]
 fn a_file_view_is_reachable_and_unchanged_in_every_case() {
     assert_eq!(
@@ -101,9 +69,6 @@ fn a_file_view_is_reachable_and_unchanged_in_every_case() {
     );
 }
 
-/// The shape diffpack-server stores in `patches.json`, snake_case and all. It
-/// re-exports this type in place of its own, so a renamed field would be a
-/// stored file it can no longer read.
 #[test]
 fn a_patch_serialises_under_its_rust_field_names() {
     let patch = Patch {
@@ -119,17 +84,11 @@ fn a_patch_serialises_under_its_rust_field_names() {
     assert_eq!(serde_json::from_value::<Patch>(json).unwrap(), patch);
 }
 
-// ---- the whitespace choice --------------------------------------------
-
-/// The same choice handed over as a value, for a caller configuring its own
-/// `TextDiff` rather than going through `get_diff_content`.
 #[test]
 fn the_whitespace_choice_is_handed_over_as_a_value() {
     assert_eq!(whitespace_mode(true), WhitespaceMode::IgnoreAll);
     assert_eq!(whitespace_mode(false), WhitespaceMode::Exact);
 }
-
-// ---- URL construction --------------------------------------------------
 
 #[test]
 fn archive_urls_are_built_for_npm_and_crates_io() {
@@ -151,12 +110,6 @@ fn archive_urls_are_built_for_npm_and_crates_io() {
     );
 }
 
-// ---- PyPI artifact selection -------------------------------------------
-
-/// PyPI serves no archive at a predictable path, so the reachable seam is the
-/// whole hop: parse the metadata payload, then pick the artifact. The JSON is
-/// the shape `pypi.org/pypi/{pkg}/{version}/json` returns, trimmed to the
-/// fields that decide the answer.
 #[test]
 fn a_pypi_payload_parses_and_yields_the_sdist() {
     let payload = r#"{
@@ -174,9 +127,6 @@ fn a_pypi_payload_parses_and_yields_the_sdist() {
     );
 }
 
-/// Built by hand rather than parsed, which is what holds the field names in
-/// place: a dependent modelling its own metadata still has to be able to
-/// construct the argument.
 #[test]
 fn a_wheel_is_taken_only_when_there_is_no_sdist() {
     let wheel = PyPiUrl {
@@ -194,8 +144,6 @@ fn a_wheel_is_taken_only_when_there_is_no_sdist() {
     );
 }
 
-// ---- the Go module proxy -----------------------------------------------
-
 #[test]
 fn a_go_module_path_is_escaped_into_a_proxy_zip_url() {
     assert_eq!(
@@ -208,9 +156,6 @@ fn a_go_module_path_is_escaped_into_a_proxy_zip_url() {
     );
 }
 
-/// The proxy case-encodes the version as well as the path, so a mixed-case
-/// pre-release is requested in its escaped spelling, through the lookup as
-/// much as through the builder.
 #[test]
 fn a_go_version_is_escaped_into_a_proxy_zip_url_too() {
     let url = "https://proxy.golang.org/github.com/!masterminds/semver/@v/v1.0.0-!r!c1.zip";
@@ -228,9 +173,6 @@ fn a_go_version_is_escaped_into_a_proxy_zip_url_too() {
     );
 }
 
-/// The intermediate directory is put back: the tree builder needs the
-/// directories a path implies, and `src/` is only implied once the versioned
-/// prefix is gone.
 #[test]
 fn the_versioned_module_root_is_stripped_from_every_path() {
     let files = HashMap::from([
@@ -253,11 +195,6 @@ fn the_versioned_module_root_is_stripped_from_every_path() {
     assert!(matches!(stripped["src"].file_type, FileType::Directory));
 }
 
-// ---- the archive lookup --------------------------------------------------
-
-/// Matched on rather than compared, which is what holds the variants and their
-/// field in place: a dependent re-exporting the enum has to be able to take
-/// it apart.
 #[test]
 fn an_archive_source_says_whether_to_fetch_the_archive_or_a_listing() {
     match archive_source("crates", "serde", "1.0.200").unwrap() {
@@ -295,8 +232,6 @@ fn an_archive_url_is_chosen_out_of_a_pypi_listing() {
     assert!(choose_archive("crates", listing).is_err());
 }
 
-/// A module zip exactly as the proxy lays it out: every entry under
-/// `<module>@<version>/`, with no directory entries of its own.
 fn go_module_zip() -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default()
@@ -311,9 +246,6 @@ fn go_module_zip() -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
-/// The whole Go path from outside the crate, from the zip's bytes. Composing
-/// the public helpers by hand leaves `y@v1.2.3/` on every path, which a diff
-/// reads as every file removed and added again.
 #[test]
 fn a_go_module_zip_unpacks_to_paths_without_the_version() {
     let files = unpack_archive("go", "github.com/x/y", "v1.2.3", &go_module_zip()).unwrap();
