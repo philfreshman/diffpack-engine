@@ -1,12 +1,5 @@
 name: Release
 
-# A release is a `v*` tag. The version itself lives in `Cargo.toml` — wasm-pack
-# copies it into the generated `pkg/package.json`, which is what npm publishes —
-# so the tag is a trigger and a cross-check, never the source of truth.
-#
-#   1. bump `version` in Cargo.toml (and `cargo check` so Cargo.lock follows)
-#   2. merge that to `development`, then open and merge `development` -> `main`
-#   3. on `main`: `git tag v0.3.0 && git push origin v0.3.0`
 on:
   push:
     tags: ["v*"]
@@ -19,13 +12,6 @@ permissions:
   contents: read
 
 env:
-  # Pinned, not `latest`. wasm-pack carries the wasm-bindgen CLI that generates
-  # the JS glue, so its version is part of the module's output: v0.1.1 built
-  # here at 0.15.0 is 595,134 bytes where a 0.14.0 build of the same commit is
-  # 591,273, with a correspondingly different `diffpack_engine.js`. Left
-  # floating, a future release picks up a new wasm-pack and ships a materially
-  # different module with nothing in the repo to explain it. Bump this
-  # deliberately.
   WASM_PACK_VERSION: 0.15.0
 
 jobs:
@@ -34,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # Required for npm provenance: the publish is signed with a short-lived
-      # OIDC token, and npm shows the commit and workflow it was built from.
       id-token: write
     steps:
       - uses: actions/checkout@v5
@@ -46,23 +30,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Not jetli/wasm-pack-action: its latest release still runs on Node 16.
-      # install-action is a composite action, so there is no Node runtime to age out.
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
-      # npm's own auth and provenance need a recent npm; the runner's bundled
-      # Node is fine, but this is also where `NODE_AUTH_TOKEN` gets wired to
-      # the registry.
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # A tag that disagrees with Cargo.toml publishes a version nobody asked
-      # for, under a git ref that does not describe it. Cheapest possible check,
-      # and it runs before anything is built.
       - name: Tag must match the crate version
         run: |
           crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
@@ -74,20 +50,12 @@ jobs:
           echo "version=$crate" >> "$GITHUB_OUTPUT"
         id: version
 
-      # The same command `ci.yml` runs on every PR, so nothing about the build
-      # is first attempted on a tag.
       - name: wasm-pack build
         run: wasm-pack build --release --target web --scope philfreshman
 
-      # wasm-pack writes a `pkg/.gitignore` of `*`. An explicit `files` list in
-      # the generated `package.json` currently outranks it — `npm pack` on this
-      # tree yields the four intended files — but the two disagree, and the day
-      # that precedence changes or `files` is dropped, the package publishes
-      # empty rather than failing. Removing the file settles it.
       - name: Drop wasm-pack's pkg/.gitignore
         run: rm -f pkg/.gitignore
 
-      # What is about to be published, on the run page, before it is published.
       - name: Show the tarball
         run: npm pack --dry-run
         working-directory: pkg

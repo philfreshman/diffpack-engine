@@ -42,10 +42,6 @@ pub struct DiffFileEntry {
     pub children: Option<Vec<DiffFileEntry>>,
 }
 
-/// The tree these types serialise to is read by TypeScript, against the
-/// `.d.ts` wasm-bindgen generates into `pkg/` and npm publishes. The names and
-/// the omissions below are that contract; a rename here is a breaking change on
-/// the other side, so it is pinned rather than left to the derive.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,8 +80,6 @@ mod tests {
         );
     }
 
-    /// `type` and `oldPath`: the field is named for Rust on this side and for
-    /// JavaScript on the other.
     #[test]
     fn a_tree_entry_serialises_with_the_names_typescript_reads() {
         let json = serde_json::to_value(entry()).unwrap();
@@ -96,8 +90,6 @@ mod tests {
         assert_eq!(json["removed"], 1);
     }
 
-    /// The optional fields are omitted rather than sent as `null`, which is
-    /// what lets the TypeScript side declare them optional.
     #[test]
     fn absent_optional_fields_are_left_out_entirely() {
         let json = serde_json::to_value(entry()).unwrap();
@@ -127,8 +119,6 @@ mod tests {
         assert_eq!(json["children"][0]["status"], "renamed");
     }
 
-    /// The entry types round-trip: `tests/web.rs` deserialises the tree it
-    /// just built, so the derive has to work in both directions.
     #[test]
     fn a_tree_entry_round_trips() {
         let json = serde_json::to_string(&entry()).unwrap();

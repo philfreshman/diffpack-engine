@@ -48,9 +48,6 @@ async fn diffing_two_distinct_versions_finds_real_changes() {
     );
 }
 
-/// Both sides of `build_diff_tree_for_package` request the same cache key when a
-/// version is diffed against itself. Concurrently joining the two fetches must not
-/// panic on the `EXTRACTION_CACHE` `RefCell`, and the result must show no changes.
 #[wasm_bindgen_test]
 async fn diffing_a_version_against_itself_reports_no_changes() {
     let tree = diff_tree("itoa", "1.0.18", "1.0.18").await;
@@ -71,7 +68,6 @@ struct FileDiff {
     is_diff: bool,
 }
 
-/// `src/lib.rs` as the active diff has it, whatever that is.
 fn active_lib_rs() -> FileDiff {
     let value = get_diff_for_path("src/lib.rs".to_string(), None, false).expect("a diff is active");
     serde_wasm_bindgen::from_value(value).expect("file diff should deserialize")
@@ -91,9 +87,6 @@ fn lib_rs_in(from: &str, to: &str) -> Result<FileDiff, String> {
     .map_err(|error| error.as_string().unwrap_or_default())
 }
 
-/// Built second, 1.0.11..1.0.14 is the active diff; a read that names
-/// 1.0.11..1.0.18 is still answered from those two versions, exactly as the
-/// active diff answered it while 1.0.18 was the one loaded.
 #[wasm_bindgen_test]
 async fn a_read_that_names_its_comparison_ignores_the_active_diff() {
     diff_tree("itoa", "1.0.11", "1.0.18").await;
@@ -103,20 +96,15 @@ async fn a_read_that_names_its_comparison_ignores_the_active_diff() {
     assert_ne!(active_lib_rs(), expected, "the two comparisons must differ");
 
     assert_eq!(lib_rs_in("1.0.11", "1.0.18"), Ok(expected));
-    // And for the comparison that is active, both reads agree.
     assert_eq!(lib_rs_in("1.0.11", "1.0.14"), Ok(active_lib_rs()));
 }
 
-/// A version nothing was built from is an error that names it, not an empty
-/// diff.
 #[wasm_bindgen_test]
 fn a_read_of_a_comparison_never_built_is_an_error() {
     let error = lib_rs_in("0.0.1", "0.0.2").expect_err("nothing was built");
     assert!(error.contains("crates:itoa:0.0.1"), "{error}");
 }
 
-/// `get_diff_for_path` renders through `build_patch` but still hands JS the
-/// camelCase `{ data, isDiff }` the app reads, not `Patch`'s own `is_diff`.
 #[wasm_bindgen_test]
 async fn a_file_view_reaches_js_as_data_and_is_diff() {
     #[derive(Deserialize, Debug)]
