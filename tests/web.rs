@@ -1,4 +1,6 @@
-use diffpack_engine::{build_diff_tree_for_package, get_diff_for_comparison, get_diff_for_path};
+use diffpack_engine::{
+    build_diff_tree_for_package, get_diff_for_comparison, get_diff_for_path, prefetch_package,
+};
 use serde::Deserialize;
 use wasm_bindgen_test::*;
 
@@ -123,4 +125,45 @@ async fn a_file_view_reaches_js_as_data_and_is_diff() {
 
     assert!(!view.is_diff, "a version against itself is byte-identical");
     assert!(view.data.contains("name = \"itoa\""), "got {view:?}");
+}
+
+fn downloads_of(archive_url: &str) -> u32 {
+    let entries = js_sys::eval(&format!(
+        "performance.getEntriesByName({archive_url:?}).length"
+    ))
+    .expect("resource timing is available");
+    entries.as_f64().expect("a count") as u32
+}
+
+#[wasm_bindgen_test]
+async fn concurrent_builds_and_a_prefetch_of_a_shared_version_download_it_once() {
+    let build = |ignore_whitespace| {
+        build_diff_tree_for_package(
+            "crates".to_string(),
+            "itoa".to_string(),
+            "1.0.9".to_string(),
+            "1.0.10".to_string(),
+            0.6,
+            ignore_whitespace,
+        )
+    };
+
+    let (exact, ignoring_whitespace, prefetch) = futures::join!(
+        build(false),
+        build(true),
+        prefetch_package(
+            "crates".to_string(),
+            "itoa".to_string(),
+            "1.0.10".to_string()
+        ),
+    );
+
+    exact.expect("the exact build should succeed");
+    ignoring_whitespace.expect("the whitespace-ignoring build should succeed");
+    prefetch.expect("the prefetch should succeed");
+    assert!(lib_rs_in("1.0.9", "1.0.10").is_ok());
+    assert_eq!(
+        downloads_of("https://static.crates.io/crates/itoa/itoa-1.0.10.crate"),
+        1
+    );
 }
