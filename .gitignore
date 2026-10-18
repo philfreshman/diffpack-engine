@@ -1,5 +1,3 @@
-# cargo
 target*
 
-# wasm-pack output: generated on every build, published from CI, never committed
 pkg/

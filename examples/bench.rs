@@ -1,38 +1,3 @@
-//! Times extraction and the diff tree over two local archives, natively.
-//!
-//! ```text
-//! cargo run --release --example bench -- <from-archive> <to-archive> [--registry NAME] [--ignore-whitespace] [--runs N]
-//! ```
-//!
-//! Any archive shape the registries serve works: a `.crate` or `.tgz`
-//! (gzip'd tar), a `.zip` or `.whl`, or a bare tar. Fetch one with `curl`
-//! from the URL `archive_source` gives for the registry.
-//!
-//! Without `--registry` both archives go through `extract_archive_bytes`,
-//! which strips one top-level directory — right for npm, crates.io and PyPI,
-//! and what the bench has always timed. `--registry npm|crates|pypi|go`
-//! unpacks them the way the page does instead, through `unpack_archive`. That
-//! matters for Go: a module zip carries `<module>@<version>/` on every path,
-//! which `extract_archive_bytes` cannot strip, so without `--registry go` the
-//! two versions share no paths and every file reads as removed-then-added.
-//! The module path and version `unpack_archive` needs are read out of each
-//! zip's own entry names, so there is nothing more to pass:
-//!
-//! ```text
-//! cargo run --release --example bench -- --registry go from.zip to.zip
-//! ```
-//!
-//! Prints, per run, how long each package took to extract and how long the
-//! tree took to build, then the medians, then a fingerprint of the tree —
-//! every node's path, status, `oldPath` and counts, hashed in tree order.
-//! Two builds that print the same fingerprint built the same tree, which is
-//! the no-regression check a performance change needs alongside its numbers.
-//!
-//! Numbers here are native numbers. They rank Rust-side changes against each
-//! other without a browser in the loop; they are not the wasm figures the
-//! issues ask for, which come from the recipe in #148. In particular a
-//! `[profile.release]` change moves native and wasm by different amounts.
-
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -44,14 +9,12 @@ use diffpack_engine::{
     build_diff_tree, extract_archive_bytes, unpack_archive, DiffFileEntry, FileMapEntry, FileType,
 };
 
-/// What `diff.worker.ts` passes; the tree must be the one the page sees.
 const SIMILARITY_THRESHOLD: f64 = 0.75;
 
 #[cfg_attr(test, derive(Debug))]
 struct Args {
     from: String,
     to: String,
-    /// `None` keeps the bench's original extraction; see the module comment.
     registry: Option<String>,
     ignore_whitespace: bool,
     runs: usize,
@@ -64,8 +27,6 @@ fn parse_args() -> Result<Args, String> {
     parse_argv(std::env::args().skip(1))
 }
 
-/// Split from `parse_args` so the flag grammar can be tested without a
-/// process to hand it arguments.
 fn parse_argv(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut positional = Vec::new();
     let mut registry = None;
@@ -75,8 +36,6 @@ fn parse_argv(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--ignore-whitespace" => ignore_whitespace = true,
-            // Which names are registries is `unpack_archive`'s to say, so an
-            // unknown one is its error, on the first run.
             "--registry" => {
                 registry = Some(
                     argv.next()
@@ -107,13 +66,9 @@ fn parse_argv(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
     }
 }
 
-/// How one archive becomes the path → entry map the tree is built from.
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum Unpack {
-    /// No `--registry`: `extract_archive_bytes`, as the bench always did.
     Generic,
-    /// `--registry`: `unpack_archive`, as the page does, with the `pkg` and
-    /// `version` it is handed for this archive.
     Registry {
         registry: String,
         pkg: String,
@@ -122,9 +77,6 @@ enum Unpack {
 }
 
 impl Unpack {
-    /// Settled once per archive, outside the timed loop. `unpack_archive`
-    /// reads `pkg` and `version` only for Go, so every other registry is
-    /// handed empty ones; a Go zip's are read out of the zip itself.
     fn for_archive(registry: Option<&str>, bytes: &[u8]) -> Result<Self, String> {
         let Some(registry) = registry else {
             return Ok(Unpack::Generic);
@@ -153,18 +105,13 @@ impl Unpack {
     }
 }
 
-/// The module path and version a Go module zip is laid out under, read from
-/// its entry names: every entry is `<module>@<version>/...`, a module path
-/// cannot contain `@`, and a version cannot contain `/`, so the first `@` and
-/// the `/` after it are the split. Only the zip's directory is read, not its
-/// contents, and the names keep the module's real casing — the spelling
-/// `strip_go_module_root` matches against, not the proxy's escaped one.
 fn go_module_identity(bytes: &[u8]) -> Result<(String, String), String> {
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|err| format!("not a Go module zip: {err}"))?;
     let identity = archive
         .file_names()
         .find_map(|name| {
+            let name = name.ok()?;
             let (module, rest) = name.split_once('@')?;
             let (version, _) = rest.split_once('/')?;
             (!module.is_empty() && !version.is_empty())
@@ -211,8 +158,6 @@ fn run() -> Result<(), String> {
     let unpack_to = Unpack::for_archive(args.registry.as_deref(), &to_bytes)
         .map_err(|e| format!("{}: {e}", args.to))?;
 
-    // The registry is named only when one was given, so a run without
-    // `--registry` prints exactly what it always has.
     let registry = args
         .registry
         .as_deref()
@@ -350,9 +295,6 @@ mod tests {
         assert_eq!(args.registry.as_deref(), Some("npm"));
     }
 
-    /// The name is taken as given: which names are registries is
-    /// `unpack_archive`'s call. What the grammar refuses is a missing one —
-    /// including the next flag, which would otherwise be swallowed as a name.
     #[test]
     fn registry_must_be_followed_by_a_name() {
         for bad in [
@@ -367,8 +309,6 @@ mod tests {
         }
     }
 
-    /// A run count of zero would median an empty slice, which panics; the
-    /// flag rejects it instead.
     #[test]
     fn runs_must_be_a_positive_integer() {
         for bad in [
@@ -398,8 +338,6 @@ mod tests {
         }
     }
 
-    // ---- unpacking per registry -------------------------------------------
-
     fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
         use std::io::Write;
 
@@ -413,8 +351,6 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
-    /// A module zip as the proxy lays it out. The version is mixed-case on
-    /// purpose: entry names keep the real casing, not the proxy's escaping.
     fn go_module_zip() -> Vec<u8> {
         zip_of(&[
             (
@@ -455,7 +391,6 @@ mod tests {
         }
     }
 
-    /// Only Go reads `pkg` and `version`, so only Go has them filled in.
     #[test]
     fn the_registry_decides_how_an_archive_is_unpacked() {
         let zip = go_module_zip();
@@ -479,8 +414,6 @@ mod tests {
         assert!(Unpack::for_archive(Some("go"), b"not a zip").is_err());
     }
 
-    /// The reason for `--registry go`: without it the versioned prefix stays
-    /// on every path, and two versions share none of them.
     #[test]
     fn a_go_module_zip_unpacks_without_its_versioned_prefix_only_with_the_registry() {
         let zip = go_module_zip();
@@ -490,8 +423,6 @@ mod tests {
         assert_eq!(sorted_keys(&files), ["go.mod", "src", "src/lib.go"]);
         assert_eq!(files["src/lib.go"].content, "package semver\n");
 
-        // Only `github.com/` goes: every file still sits under
-        // `Masterminds/semver@v1.0.0-RC1/`.
         let generic = Unpack::Generic.unpack(&zip).unwrap();
         assert!(generic.contains_key("Masterminds/semver@v1.0.0-RC1/src/lib.go"));
         assert!(
@@ -519,8 +450,6 @@ mod tests {
         let mut samples = [30, 10, 20].map(Duration::from_millis);
         assert_eq!(median(&mut samples), Duration::from_millis(20));
 
-        // Even count: the upper of the two middles, which is what
-        // `len / 2` indexes.
         let mut even = [10, 20, 30, 40].map(Duration::from_millis);
         assert_eq!(median(&mut even), Duration::from_millis(30));
 
@@ -565,9 +494,6 @@ mod tests {
         hasher.finish()
     }
 
-    /// The whole point of the fingerprint: two builds that agree print the
-    /// same number, and any node's path, status, `oldPath` or counts moving
-    /// changes it.
     #[test]
     fn the_fingerprint_covers_every_field_it_claims_to() {
         let tree = directory("/", vec![file("a.rs", DiffStatus::Modified)]);
@@ -594,7 +520,6 @@ mod tests {
         assert_ne!(hash(&tree), hash(&recounted));
     }
 
-    /// Order matters: the same nodes rearranged are a different tree.
     #[test]
     fn the_fingerprint_is_taken_in_tree_order() {
         let one = directory(

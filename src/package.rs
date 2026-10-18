@@ -13,63 +13,23 @@ use zip::ZipArchive;
 
 use crate::types::{FileMapEntry, FileType};
 
-/// What PyPI's per-version metadata document — the [`ArchiveSource::Listing`]
-/// that [`archive_source`] gives for `pypi` — answers, reduced to the field
-/// that decides which archive to fetch. Every other key in that payload is
-/// ignored, so the shape survives PyPI adding to it.
-///
-/// Supported API: `diffpack-server` parses PyPI metadata into this and hands
-/// `urls` to [`select_pypi_sdist_url`]. [`choose_archive`] does both steps.
 #[derive(Deserialize)]
 pub struct PyPiResponse {
     pub urls: Vec<PyPiUrl>,
 }
 
-/// One downloadable artifact for a version. `packagetype` is PyPI's own
-/// vocabulary — `sdist` for a source distribution, `bdist_wheel` for a wheel —
-/// and is compared as PyPI spells it.
-///
-/// Supported API: the element type of [`select_pypi_sdist_url`]'s argument.
 #[derive(Deserialize)]
 pub struct PyPiUrl {
     pub url: String,
     pub packagetype: String,
 }
 
-// ---- one archive lookup per registry ------------------------------------
-//
-// Every per-registry question about one version's archive — where it is, how
-// to read its URL out of a listing, how to unpack it — answered without a
-// network call. The caller does the fetching: the browser through `fetch`
-// below, `diffpack-server` with its own client, size cap and errors. The
-// order is always
-//
-//     archive_source → fetch → (choose_archive → fetch, for a Listing only)
-//                    → unpack_archive
-//
-// Registries are named by string, as `build_tarball_url` and the
-// `#[wasm_bindgen]` functions name them; an unknown one is an `Err`.
-
-/// Where one version's archive is found, before anything is fetched.
-///
-/// Supported API: `diffpack-server` re-exports this as its own `ArchiveSource`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArchiveSource {
-    /// The archive itself, at a URL built from the package and the version.
     Archive { url: String },
-    /// A metadata document listing the version's files; read the archive's
-    /// URL out of it with [`choose_archive`].
     Listing { url: String },
 }
 
-/// Where to fetch one version's archive from. npm, crates.io and Go serve it
-/// at a URL built from the name and the version, so the answer is the
-/// [`ArchiveSource::Archive`] itself. PyPI's is only discoverable from its
-/// per-version metadata, so the answer is the [`ArchiveSource::Listing`] to
-/// fetch first and hand to [`choose_archive`].
-///
-/// Supported API: the first step of a lookup, for `diffpack-server` and the
-/// browser alike.
 pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<ArchiveSource, String> {
     match registry {
         "npm" | "crates" => {
@@ -78,7 +38,6 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
         "go" => Ok(ArchiveSource::Archive {
             url: build_go_zip_url(pkg, version),
         }),
-        // The only place the PyPI metadata URL is written out.
         "pypi" => Ok(ArchiveSource::Listing {
             url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
         }),
@@ -86,14 +45,6 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
     }
 }
 
-/// The archive URL, read out of the body of the [`ArchiveSource::Listing`]
-/// that [`archive_source`] gave. For PyPI that is the metadata JSON, parsed as
-/// a [`PyPiResponse`] and put through [`select_pypi_sdist_url`].
-///
-/// A registry whose source is an [`ArchiveSource::Archive`] has no listing, so
-/// asking it to choose is an error rather than a guess.
-///
-/// Supported API: the second step of a lookup, for a `Listing` only.
 pub fn choose_archive(registry: &str, listing: &str) -> Result<String, String> {
     match registry {
         "pypi" => {
@@ -108,19 +59,6 @@ pub fn choose_archive(registry: &str, listing: &str) -> Result<String, String> {
     }
 }
 
-/// One version's fetched archive, unpacked to the path → entry map the diff
-/// runs on, with whatever wrapper directory the registry puts around it
-/// removed.
-///
-/// For Go that wrapper is the module's `<module>@<version>/` prefix, which
-/// spans several path components and embeds the version: the archive is
-/// extracted without the usual single-root strip and then put through
-/// [`strip_go_module_root`], so no path carries the version. Every other
-/// registry goes through [`extract_archive_bytes`]. `pkg` and `version` are
-/// only read for Go.
-///
-/// Supported API: the last step of a lookup, and the only correct way to
-/// unpack a Go module zip from outside this crate.
 pub fn unpack_archive(
     registry: &str,
     pkg: &str,
@@ -141,7 +79,6 @@ fn unsupported_registry(registry: &str) -> String {
     format!("Unsupported registry: {registry}")
 }
 
-/// The browser's lookup: the steps above, with `fetch` between them.
 pub async fn fetch_and_extract_package(
     registry: &str,
     pkg: &str,
@@ -165,31 +102,14 @@ fn js_error(err: String) -> JsValue {
     JsValue::from_str(&err)
 }
 
-/// The module proxy serves lower-cased paths, escaping each uppercase letter as
-/// `!` followed by its lowercase form, so `Masterminds` becomes `!masterminds`.
-/// Requesting the unescaped path is a 404.
-///
-/// Supported API: exposed for `diffpack-server`. [`build_go_zip_url`] is the
-/// usual way in, and [`archive_source`] the usual way to that.
 pub fn escape_go_module_path(pkg: &str) -> String {
     go_case_escape(pkg)
 }
 
-/// The version half of the same escaping. The proxy protocol case-encodes the
-/// version exactly as it does the module path, so a pre-release such as
-/// `v1.0.0-RC1` is served as `v1.0.0-!r!c1`; requesting it verbatim is an
-/// error from the proxy. Most versions are lower-case already and come back
-/// unchanged.
-///
-/// Supported API: exposed for `diffpack-server` alongside
-/// [`escape_go_module_path`]. [`build_go_zip_url`] applies both.
 pub fn escape_go_version(version: &str) -> String {
     go_case_escape(version)
 }
 
-/// The proxy's case-encoding, shared by the module path and the version so the
-/// two cannot drift apart: each ASCII uppercase letter becomes `!` followed by
-/// its lowercase form, and everything else is left as it is.
 fn go_case_escape(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -203,13 +123,6 @@ fn go_case_escape(value: &str) -> String {
     escaped
 }
 
-/// The proxy's zip for one module version. There is no registry lookup in
-/// front of it: the path is the module's own, escaped by
-/// [`escape_go_module_path`], and the version is Go's `v`-prefixed spelling,
-/// escaped by [`escape_go_version`].
-///
-/// Supported API: exposed for `diffpack-server`. [`archive_source`] gives this
-/// same URL for `go`, and is the lookup to reach for.
 pub fn build_go_zip_url(pkg: &str, version: &str) -> String {
     format!(
         "https://proxy.golang.org/{}/@v/{}.zip",
@@ -218,26 +131,6 @@ pub fn build_go_zip_url(pkg: &str, version: &str) -> String {
     )
 }
 
-/// Module zips prefix every entry with `<module>@<version>/`. That prefix embeds
-/// the version, so the two sides of a diff would share no paths at all and every
-/// file would read as removed-then-added. Unlike the other registries the prefix
-/// spans several components (`github.com/sirupsen/logrus@v1.9.3/`), which is why
-/// `strip_common_root` cannot do the job. Entry names keep the module's real
-/// casing, so the unescaped path is the one to strip.
-///
-/// Falls back to stripping whatever single top-level directory the archive has
-/// when that prefix is absent, so a zip that does not follow the convention is
-/// still usable. Directories a surviving path implies are put back.
-///
-/// Supported API: exposed for `diffpack-server`, but [`unpack_archive`] is the
-/// way to use it.
-///
-/// **Warning:** this needs a map whose top-level directory has *not* been
-/// stripped, and [`extract_archive_bytes`] cannot give you one — it strips the
-/// lone `github.com/` directory, so the prefix is never found, the fallback
-/// runs, and every path comes out as `y@v1.2.3/...` with the version still in
-/// it. `unpack_archive("go", ..)` extracts without that strip and then calls
-/// this.
 pub fn strip_go_module_root(
     files: HashMap<String, FileMapEntry>,
     pkg: &str,
@@ -261,15 +154,6 @@ pub fn strip_go_module_root(
     stripped
 }
 
-/// The archive URL for one version, for the registries that serve one at a
-/// predictable path. npm repeats the name after `/-/` without its scope, so
-/// `@types/node` is served from `/@types/node/-/node-20.1.0.tgz`. PyPI is not
-/// here: its artifact URL is only discoverable from the metadata endpoint, and
-/// `select_pypi_sdist_url` is the half of that this crate can settle.
-///
-/// Supported API: `diffpack-server` builds fetch URLs with this.
-/// [`archive_source`] covers every registry, PyPI and Go included, and is the
-/// lookup to reach for.
 pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<String, String> {
     match registry {
         "npm" => {
@@ -313,17 +197,6 @@ fn fetch_with_str(url: &str) -> Result<js_sys::Promise, JsValue> {
     }
 }
 
-/// The artifact to diff, in preference order: a source distribution this crate
-/// can open, else a wheel it can open, else either of them in a format it
-/// cannot — a `.tar.bz2` sdist is still a better answer than none, and the
-/// extractor reports its own failure. A version with no artifacts at all is an
-/// error.
-///
-/// Wheels are built, not sources, so an sdist is preferred wherever one exists.
-///
-/// Supported API: `diffpack-server` picks PyPI archives with this rather than
-/// repeating the order. [`choose_archive`] parses the metadata and applies
-/// this in one step.
 pub fn select_pypi_sdist_url(urls: &[PyPiUrl]) -> Result<String, String> {
     let mut sdist_supported = None;
     let mut sdist_fallback = None;
@@ -366,43 +239,14 @@ fn is_supported_archive_url(url: &str) -> bool {
         || lower.ends_with(".whl")
 }
 
-/// Every archive shape a registry serves — `.tgz`/`.crate` (gzip'd tar),
-/// `.zip`/`.whl`, or a bare tar — to the path → entry map the diff runs on,
-/// with a single top-level directory stripped. Pure Rust, so it is also what
-/// `examples/bench.rs` times natively.
-///
-/// Not for a Go module zip: see [`strip_go_module_root`]. [`unpack_archive`]
-/// picks the right extraction for every registry.
 pub fn extract_archive_bytes(bytes: &[u8]) -> Result<HashMap<String, FileMapEntry>, String> {
     extract_archive_bytes_with(bytes, true)
 }
 
-/// How far ahead of the tar parser the gunzip runs. Tar reads its 512-byte
-/// headers one at a time; without this each of them would be its own trip
-/// into the inflater.
 const GUNZIP_READAHEAD: usize = 64 * 1024;
 
-/// The most a byte of deflate can expand to, per the format. Bounds every
-/// size an archive *claims* — a gzip trailer, a tar header, a zip directory —
-/// so a corrupt or hostile one cannot ask for a buffer the input could never
-/// fill. wasm memory never shrinks, so a wild pre-allocation would stay with
-/// the page for the rest of the session.
 const MAX_DEFLATE_RATIO: usize = 1032;
 
-/// The uncompressed content is copied as few times as the formats allow:
-///
-/// - a gzip'd tar is streamed straight from the inflater into the tar
-///   parser, never materialised as a whole;
-/// - a gzip'd zip has to be materialised, because zip is read from its
-///   central directory at the end, but into a buffer sized once from the
-///   gzip trailer rather than grown from empty;
-/// - every entry lands in a buffer sized from its header and becomes a
-///   `String` without another copy when it is valid UTF-8, which nearly every
-///   file is.
-///
-/// On an 80 MB package the old path — gunzip into an unsized buffer, each
-/// entry into another, then `from_utf8_lossy(..).into_owned()` — was ~7 copies
-/// of the content; `tests::COPIES_ALLOWED` pins the budget this has to meet.
 fn extract_archive_bytes_with(
     bytes: &[u8],
     strip_root: bool,
@@ -430,9 +274,6 @@ fn extract_archive_bytes_with(
     parse_tar(bytes, bytes.len(), strip_root)
 }
 
-/// The ISIZE trailer: the uncompressed length modulo 2³², which for anything
-/// a registry serves is the length. Only a hint for a buffer's capacity, so a
-/// wrong one costs a reallocation, never a wrong result.
 fn gzip_uncompressed_size(bytes: &[u8]) -> usize {
     match bytes {
         [.., a, b, c, d] => u32::from_le_bytes([*a, *b, *c, *d]) as usize,
@@ -440,15 +281,11 @@ fn gzip_uncompressed_size(bytes: &[u8]) -> usize {
     }
 }
 
-/// A buffer for an entry that says it is `declared` bytes long. `cap` is the
-/// most the archive as a whole can hold, so a lying header gets at most that.
 fn entry_buffer(declared: u64, cap: usize) -> Vec<u8> {
     let declared = usize::try_from(declared).unwrap_or(usize::MAX);
     Vec::with_capacity(declared.min(cap))
 }
 
-/// Owns the bytes when they are UTF-8 — no copy — and renders them lossily
-/// only when they are not, exactly as they were always rendered.
 fn content_from_bytes(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes)
         .unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned())
@@ -523,7 +360,10 @@ fn parse_zip_bytes(
         let mut entry = archive
             .by_index(i)
             .map_err(|err| format!("Zip entry error: {err}"))?;
-        let normalized = normalize_path(entry.name(), entry.is_dir());
+        let name = entry
+            .name()
+            .map_err(|err| format!("Zip entry name error: {err}"))?;
+        let normalized = normalize_path(&name, entry.is_dir());
         if normalized.is_empty() {
             continue;
         }
@@ -651,11 +491,6 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
 
-    /// Counts every byte the current thread asks the allocator for, so a test
-    /// can pin how many times a package's content is copied on its way to the
-    /// map — a deterministic figure where a timing would flake. A realloc
-    /// counts its new size in full: a growing `Vec` that doubles its way to
-    /// `n` bytes has asked for about `2n`, which is the shape being measured.
     struct CountingAllocator;
 
     thread_local! {
@@ -663,7 +498,6 @@ mod tests {
     }
 
     fn record(bytes: usize) {
-        // A thread that is being torn down has no counter to update.
         let _ = REQUESTED.try_with(|counter| counter.set(counter.get() + bytes));
     }
 
@@ -693,8 +527,6 @@ mod tests {
         (out, after - before)
     }
 
-    /// Text that deflates like source code does — repetitive, but not so
-    /// trivially that the decompressor's cost vanishes.
     fn text(seed: usize, bytes: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes + 64);
         let mut line = 0;
@@ -710,8 +542,6 @@ mod tests {
         out
     }
 
-    /// `(path, bytes)` for a package of `count` files of `size` bytes each,
-    /// under one top-level directory the way a registry tarball is laid out.
     fn package(count: usize, size: usize) -> Vec<(String, Vec<u8>)> {
         (0..count)
             .map(|i| (format!("pkg-1.0.0/src/file_{i}.rs"), text(i, size)))
@@ -753,8 +583,6 @@ mod tests {
         entries.iter().map(|(_, bytes)| bytes.len()).sum()
     }
 
-    /// What every extracted file must read as: the bytes themselves when they
-    /// are UTF-8, and the lossy rendering when they are not.
     fn expected_content(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
     }
@@ -776,10 +604,6 @@ mod tests {
         assert_eq!(file_count, entries.len());
     }
 
-    /// Valid UTF-8, invalid UTF-8, and an empty file, in every archive shape a
-    /// registry serves plus the bare tar and gzipped zip the extractor also
-    /// accepts. Invalid bytes must come out as the lossy rendering they always
-    /// have — the fast path must not change what a reader sees.
     fn mixed_entries() -> Vec<(String, Vec<u8>)> {
         vec![
             ("pkg-1.0.0/src/lib.rs".to_string(), text(1, 3000)),
@@ -840,13 +664,6 @@ mod tests {
         assert!(extract_archive_bytes(&archive).is_err());
     }
 
-    /// The budget every archive shape has to meet: each byte of file content
-    /// is copied into its `String` about once. Before this was pinned, a
-    /// gzipped tar cost ~5× — the gunzip buffer doubling its way up, each
-    /// entry's buffer doubling its way up again, and a third copy for
-    /// `from_utf8_lossy(..).into_owned()` on bytes that were valid all along —
-    /// and on an 80 MB package that is the difference between a 100 MB and a
-    /// 400 MB high-water mark in a wasm heap that never shrinks.
     const COPIES_ALLOWED: usize = 2;
 
     fn assert_within_copy_budget(archive: &[u8], entries: &[(String, Vec<u8>)], shape: &str) {
@@ -882,8 +699,6 @@ mod tests {
         assert_within_copy_budget(&zip_bytes(&entries), &entries, "zip");
     }
 
-    // ---- URL construction -------------------------------------------------
-
     #[test]
     fn a_go_module_path_escapes_every_uppercase_letter() {
         assert_eq!(
@@ -898,8 +713,6 @@ mod tests {
         assert_eq!(escape_go_module_path(""), "");
     }
 
-    /// Non-ASCII uppercase is left alone: the proxy's escaping rule is defined
-    /// over ASCII, and lower-casing anything else would invent a path.
     #[test]
     fn go_module_escaping_leaves_non_ascii_alone() {
         assert_eq!(
@@ -916,8 +729,6 @@ mod tests {
         );
     }
 
-    /// The version is case-encoded like the path: a mixed-case pre-release
-    /// requested verbatim is an error from the proxy.
     #[test]
     fn a_go_version_escapes_every_uppercase_letter() {
         assert_eq!(escape_go_version("v1.0.0-RC1"), "v1.0.0-!r!c1");
@@ -965,8 +776,6 @@ mod tests {
         );
     }
 
-    // ---- the archive lookup -----------------------------------------------
-
     fn archive(url: &str) -> ArchiveSource {
         ArchiveSource::Archive {
             url: url.to_string(),
@@ -1009,9 +818,6 @@ mod tests {
         );
     }
 
-    /// The metadata URL is written out in `src/` exactly once, in
-    /// `archive_source`; `tests/public_api.rs` pins it byte for byte. What is
-    /// checked here is that it is a listing, on PyPI, for this version.
     #[test]
     fn pypi_is_found_through_its_metadata_listing() {
         match archive_source("pypi", "requests", "2.32.3").unwrap() {
@@ -1046,7 +852,6 @@ mod tests {
         );
     }
 
-    /// The same messages the browser has always reported for these two.
     #[test]
     fn a_pypi_listing_that_is_malformed_or_empty_is_an_error() {
         assert!(choose_archive("pypi", "not json")
@@ -1070,9 +875,6 @@ mod tests {
         );
     }
 
-    /// The bug `unpack_archive` exists to fix: `extract_archive_bytes` strips
-    /// the lone `github.com/` directory, after which `strip_go_module_root`
-    /// cannot find its prefix and the version stays in every path.
     #[test]
     fn a_go_module_zip_unpacks_without_its_versioned_prefix() {
         let entries = vec![
@@ -1128,8 +930,6 @@ mod tests {
         );
     }
 
-    // ---- PyPI artifact selection ------------------------------------------
-
     fn pypi(packagetype: &str, url: &str) -> PyPiUrl {
         PyPiUrl {
             url: url.to_string(),
@@ -1177,8 +977,6 @@ mod tests {
         assert_eq!(select_pypi_sdist_url(&urls).unwrap(), "https://x/a.whl");
     }
 
-    /// Nothing supported on offer: the sdist is still the better guess, and
-    /// the extractor gets to be the one that says no.
     #[test]
     fn an_unsupported_sdist_is_the_fallback_before_an_unsupported_wheel() {
         let urls = [
@@ -1206,11 +1004,8 @@ mod tests {
             select_pypi_sdist_url(&[]).unwrap_err(),
             "No downloadable artifacts found for PyPI package"
         );
-        // `bdist_egg` is neither of the two packagetypes considered.
         assert!(select_pypi_sdist_url(&[pypi("bdist_egg", "https://x/a.zip")]).is_err());
     }
-
-    // ---- format sniffing --------------------------------------------------
 
     #[test]
     fn gzip_is_recognised_by_its_two_magic_bytes() {
@@ -1220,8 +1015,6 @@ mod tests {
         assert!(!is_gzip(&[0x1f, 0x8c]));
     }
 
-    /// All three local-header signatures, because a zip that was streamed or
-    /// spanned carries one of the other two.
     #[test]
     fn zip_is_recognised_by_any_of_its_signatures() {
         assert!(is_zip(b"PK\x03\x04"));
@@ -1236,11 +1029,8 @@ mod tests {
     fn the_gzip_trailer_is_read_as_the_uncompressed_length() {
         let payload = text(0, 5000);
         assert_eq!(gzip_uncompressed_size(&gzip(&payload)), payload.len());
-        // Too short to hold a trailer at all.
         assert_eq!(gzip_uncompressed_size(&[0x1f, 0x8b, 0x08]), 0);
     }
-
-    // ---- buffers and content ----------------------------------------------
 
     #[test]
     fn an_entry_buffer_is_sized_from_its_header_but_capped_by_the_archive() {
@@ -1267,8 +1057,6 @@ mod tests {
         assert_eq!(dir.content, "");
     }
 
-    // ---- path normalisation -----------------------------------------------
-
     #[test]
     fn a_path_is_normalised_to_forward_slashes_without_a_leading_dot_or_root() {
         assert_eq!(normalize_path("src\\lib.rs", false), "src/lib.rs");
@@ -1277,8 +1065,6 @@ mod tests {
         assert_eq!(normalize_path("/src/lib.rs", false), "src/lib.rs");
     }
 
-    /// A directory entry arrives with a trailing slash; the map keys it
-    /// without one, so it is the same string a child's parent walk produces.
     #[test]
     fn a_directory_loses_its_trailing_slash_and_a_file_keeps_its_name() {
         assert_eq!(normalize_path("src/", true), "src");
@@ -1293,8 +1079,6 @@ mod tests {
         assert_eq!(normalize_path("./", true), "");
         assert_eq!(normalize_path("/", true), "");
     }
-
-    // ---- directory synthesis and root stripping ---------------------------
 
     fn map(entries: &[(&str, FileMapEntry)]) -> HashMap<String, FileMapEntry> {
         entries
@@ -1319,7 +1103,6 @@ mod tests {
         }
     }
 
-    /// The synthesised walk must not overwrite an entry that is already there.
     #[test]
     fn ensuring_directories_leaves_existing_entries_alone() {
         let mut files = map(&[
@@ -1358,8 +1141,6 @@ mod tests {
         );
     }
 
-    /// A lone top-level *file* is not a wrapper directory — stripping it would
-    /// leave nothing behind.
     #[test]
     fn a_lone_top_level_file_is_not_stripped() {
         let files = map(&[("README.md", file_entry("x".to_string()))]);
@@ -1376,8 +1157,6 @@ mod tests {
     fn an_empty_map_survives_root_stripping() {
         assert!(strip_common_root(HashMap::new()).is_empty());
     }
-
-    // ---- the Go module prefix ---------------------------------------------
 
     #[test]
     fn a_go_module_root_is_stripped_prefix_and_all() {
@@ -1403,8 +1182,6 @@ mod tests {
         ));
     }
 
-    /// No entry carries the `<module>@<version>/` prefix — a zip laid out some
-    /// other way falls back to the ordinary single-root strip.
     #[test]
     fn a_zip_without_the_module_prefix_falls_back_to_the_common_root() {
         let files = map(&[
@@ -1415,10 +1192,6 @@ mod tests {
         assert_eq!(sorted_keys(&stripped), ["main.go"]);
     }
 
-    // ---- extraction round-trips -------------------------------------------
-
-    /// What the Go path asks for: the module prefix is stripped afterwards, so
-    /// extraction must not have taken the first component off already.
     #[test]
     fn extraction_can_be_asked_to_keep_the_top_level_directory() {
         let entries = vec![("pkg-1.0.0/src/lib.rs".to_string(), text(1, 128))];
