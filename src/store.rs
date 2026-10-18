@@ -81,6 +81,7 @@ mod tests {
     use std::cell::Cell;
 
     const KEY: &str = "crates:itoa:1.0.18";
+    const OTHER_KEY: &str = "crates:itoa:1.0.11";
 
     type FetchResult = Result<HashMap<String, FileMapEntry>, String>;
 
@@ -159,6 +160,61 @@ mod tests {
         assert_eq!(fetches.get(), 1);
         assert_eq!(first.unwrap_err(), "404");
         assert_eq!(second.unwrap_err(), "404");
+    }
+
+    #[test]
+    fn concurrent_loads_of_different_versions_fetch_each_one() {
+        let store = PackageStore::<String>::new();
+        let fetches = Rc::new(Cell::new(0));
+        let (release_first, first_released) = oneshot::channel();
+        let (release_second, second_released) = oneshot::channel();
+
+        let (first, second, (), ()) = block_on(async {
+            futures::join!(
+                store.get_or_fetch(
+                    KEY.to_string(),
+                    counted_fetch_awaiting(&fetches, first_released)
+                ),
+                store.get_or_fetch(
+                    OTHER_KEY.to_string(),
+                    counted_fetch_awaiting(&fetches, second_released)
+                ),
+                async { release_first.send(Ok(extracted_files())).unwrap() },
+                async { release_second.send(Ok(extracted_files())).unwrap() },
+            )
+        });
+
+        assert_eq!(fetches.get(), 2);
+        assert!(!Rc::ptr_eq(&first.unwrap(), &second.unwrap()));
+        assert!(store.extracted().contains_key(KEY));
+        assert!(store.extracted().contains_key(OTHER_KEY));
+    }
+
+    #[test]
+    fn a_fetch_abandoned_by_its_caller_is_finished_by_the_next_one() {
+        let store = PackageStore::<String>::new();
+        let fetches = Rc::new(Cell::new(0));
+        let (release, released) = oneshot::channel();
+        let (_, never_released) = oneshot::channel();
+
+        let abandoned = store
+            .get_or_fetch(KEY.to_string(), counted_fetch_awaiting(&fetches, released))
+            .now_or_never();
+        assert!(abandoned.is_none());
+
+        let (joined, ()) = block_on(async {
+            futures::join!(
+                store.get_or_fetch(
+                    KEY.to_string(),
+                    counted_fetch_awaiting(&fetches, never_released)
+                ),
+                async { release.send(Ok(extracted_files())).unwrap() },
+            )
+        });
+
+        assert_eq!(fetches.get(), 1);
+        assert!(joined.is_ok());
+        assert!(store.extracted().contains_key(KEY));
     }
 
     #[test]
