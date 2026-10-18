@@ -111,6 +111,7 @@ fn go_module_identity(bytes: &[u8]) -> Result<(String, String), String> {
     let identity = archive
         .file_names()
         .find_map(|name| {
+            let name = name.ok()?;
             let (module, rest) = name.split_once('@')?;
             let (version, _) = rest.split_once('/')?;
             (!module.is_empty() && !version.is_empty())
