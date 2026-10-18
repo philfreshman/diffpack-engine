@@ -360,7 +360,10 @@ fn parse_zip_bytes(
         let mut entry = archive
             .by_index(i)
             .map_err(|err| format!("Zip entry error: {err}"))?;
-        let normalized = normalize_path(entry.name(), entry.is_dir());
+        let name = entry
+            .name()
+            .map_err(|err| format!("Zip entry name error: {err}"))?;
+        let normalized = normalize_path(&name, entry.is_dir());
         if normalized.is_empty() {
             continue;
         }
