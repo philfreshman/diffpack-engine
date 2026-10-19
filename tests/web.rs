@@ -305,6 +305,7 @@ async fn a_download_whose_body_breaks_off_rejects_as_a_network_failure_with_its_
 const STUB_COMPOSER_LISTING: &str = r#"{
     "minified": "composer/2.0",
     "packages": {"stub/package": [
+        {"version": "3.0.0"},
         {"version": "2.0.0", "dist": {"type": "zip", "url": "https://git.drupalcode.org/stub/package/-/archive/2.0.0.zip"}},
         {"version": "1.0.0", "dist": {"type": "zip", "url": "https://api.github.com/repos/stub/package/zipball/1111111111111111111111111111111111111111"}}
     ]}
@@ -346,5 +347,17 @@ async fn a_composer_archive_on_an_unsupported_host_rejects_with_unsupported_arch
     assert_eq!(
         text_property(&error, "code").as_deref(),
         Some("unsupported_archive_host")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_composer_version_without_an_archive_rejects_with_no_archive() {
+    let error = rejection_of_a_composer_version("3.0.0").await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("no_archive"));
+    assert_eq!(
+        text_property(&error, "message").as_deref(),
+        Some("Packagist lists no archive for stub/package 3.0.0")
     );
 }
