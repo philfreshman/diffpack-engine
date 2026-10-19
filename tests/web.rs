@@ -2,6 +2,7 @@ use diffpack_engine::{
     build_diff_tree_for_package, get_diff_for_comparison, get_diff_for_path, prefetch_package,
 };
 use serde::Deserialize;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -166,4 +167,137 @@ async fn concurrent_builds_and_a_prefetch_of_a_shared_version_download_it_once()
         downloads_of("https://static.crates.io/crates/itoa/itoa-1.0.10.crate"),
         1
     );
+}
+
+#[wasm_bindgen(inline_js = r#"
+let realFetch;
+
+function replaceFetch(stub) {
+    realFetch ??= globalThis.fetch;
+    globalThis.fetch = stub;
+}
+
+export function answer_every_fetch_with(status, body) {
+    replaceFetch(async () => new Response(body, { status }));
+}
+
+export function answer_every_fetch_as_the_proxy(status, code, body) {
+    replaceFetch(async () => new Response(body, {
+        status,
+        headers: { "Diffpack-Proxy-Error": code, "Content-Type": "application/json" },
+    }));
+}
+
+export function answer_every_fetch_with_a_body_that_breaks_off() {
+    replaceFetch(async () => {
+        const brokenBody = new ReadableStream({
+            start(controller) {
+                controller.error(new TypeError("network error"));
+            },
+        });
+        return new Response(brokenBody, { status: 200 });
+    });
+}
+
+export function reject_every_fetch() {
+    replaceFetch(async () => {
+        throw new TypeError("Failed to fetch");
+    });
+}
+
+export function restore_fetch() {
+    globalThis.fetch = realFetch;
+}
+"#)]
+extern "C" {
+    fn answer_every_fetch_with(status: u16, body: &str);
+    fn answer_every_fetch_as_the_proxy(status: u16, code: &str, body: &str);
+    fn answer_every_fetch_with_a_body_that_breaks_off();
+    fn reject_every_fetch();
+    fn restore_fetch();
+}
+
+const UNPUBLISHED_ITOA_DOWNLOAD: &str =
+    "https://static.crates.io/crates/itoa/itoa-0.0.0-stub.crate";
+
+const QUOTA_EXHAUSTED_BODY: &str = r#"{"error":"quota_exhausted","message":"diffpack's Composer proxy has used today's free allowance. It resets at 00:00 UTC.","resetsAt":"2026-10-20T00:00:00Z"}"#;
+
+async fn rejection_of_a_stubbed_download() -> JsValue {
+    let result = prefetch_package(
+        "crates".to_string(),
+        "itoa".to_string(),
+        "0.0.0-stub".to_string(),
+    )
+    .await;
+    restore_fetch();
+    result.expect_err("a stubbed failure must reject")
+}
+
+fn property(error: &JsValue, name: &str) -> JsValue {
+    js_sys::Reflect::get(error, &JsValue::from_str(name)).expect("an Error has readable properties")
+}
+
+fn text_property(error: &JsValue, name: &str) -> Option<String> {
+    property(error, name).as_string()
+}
+
+fn number_property(error: &JsValue, name: &str) -> Option<f64> {
+    property(error, name).as_f64()
+}
+
+#[wasm_bindgen_test]
+async fn a_plain_404_rejects_with_not_found_even_when_its_body_looks_like_a_proxy_error() {
+    answer_every_fetch_with(404, QUOTA_EXHAUSTED_BODY);
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("not_found"));
+    assert_eq!(number_property(&error, "status"), Some(404.0));
+    assert_eq!(
+        text_property(&error, "message"),
+        Some(format!(
+            "Couldn't download {UNPUBLISHED_ITOA_DOWNLOAD} (HTTP 404)"
+        ))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_download_that_never_got_an_answer_rejects_as_a_network_failure() {
+    reject_every_fetch();
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("network"));
+    assert!(property(&error, "status").is_undefined());
+}
+
+#[wasm_bindgen_test]
+async fn a_proxy_quota_answer_rejects_with_its_code_and_reset_time() {
+    answer_every_fetch_as_the_proxy(503, "quota_exhausted", QUOTA_EXHAUSTED_BODY);
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(
+        text_property(&error, "code").as_deref(),
+        Some("quota_exhausted")
+    );
+    assert_eq!(number_property(&error, "status"), Some(503.0));
+    assert_eq!(
+        text_property(&error, "resetsAt").as_deref(),
+        Some("2026-10-20T00:00:00Z")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_download_whose_body_breaks_off_rejects_as_a_network_failure_with_its_status() {
+    answer_every_fetch_with_a_body_that_breaks_off();
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("network"));
+    assert_eq!(number_property(&error, "status"), Some(200.0));
 }

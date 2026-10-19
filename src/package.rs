@@ -11,6 +11,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Response, Window, WorkerGlobalScope};
 use zip::ZipArchive;
 
+use crate::fetch_failure::FetchFailure;
 use crate::types::{FileMapEntry, FileType};
 
 #[derive(Deserialize)]
@@ -88,14 +89,17 @@ pub async fn fetch_and_extract_package(
         ArchiveSource::Archive { url } => url,
         ArchiveSource::Listing { url } => {
             let listing = fetch_bytes(&url).await?;
-            let listing = std::str::from_utf8(&listing).map_err(|err| {
-                JsValue::from_str(&format!("Failed to parse PyPI metadata: {err}"))
-            })?;
+            let listing = listing_text(registry, &listing).map_err(js_error)?;
             choose_archive(registry, listing).map_err(js_error)?
         }
     };
     let bytes = fetch_bytes(&archive_url).await?;
     unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+}
+
+fn listing_text<'a>(registry: &str, listing: &'a [u8]) -> Result<&'a str, String> {
+    std::str::from_utf8(listing)
+        .map_err(|err| format!("The {registry} listing is not valid UTF-8: {err}"))
 }
 
 fn js_error(err: String) -> JsValue {
@@ -170,30 +174,53 @@ pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<Str
 }
 
 async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
-    let fetch_promise = fetch_with_str(url)?;
-    let resp_value = JsFuture::from(fetch_promise).await?;
-    let resp: Response = resp_value.dyn_into()?;
-    if !resp.ok() {
-        return Err(JsValue::from_str(&format!(
-            "Failed to fetch tarball from {url}"
-        )));
+    let response = fetch_response(url).await?;
+    if !response.ok() {
+        return Err(failed_answer(url, &response).await.into());
     }
+    Ok(read_body(url, &response).await?)
+}
 
-    let buffer = JsFuture::from(resp.array_buffer()?).await?;
+const PROXY_ERROR_HEADER: &str = "Diffpack-Proxy-Error";
+
+async fn failed_answer(url: &str, response: &Response) -> FetchFailure {
+    let proxy_error_body = if is_proxy_answer(response) {
+        Some(read_body(url, response).await.unwrap_or_default())
+    } else {
+        None
+    };
+    FetchFailure::from_answer(url, response.status(), proxy_error_body.as_deref())
+}
+
+fn is_proxy_answer(response: &Response) -> bool {
+    response.headers().has(PROXY_ERROR_HEADER).unwrap_or(false)
+}
+
+async fn fetch_response(url: &str) -> Result<Response, JsValue> {
+    let answer = JsFuture::from(fetch_with_str(url)?)
+        .await
+        .map_err(|_| FetchFailure::unanswered(url))?;
+    answer.dyn_into()
+}
+
+async fn read_body(url: &str, response: &Response) -> Result<Vec<u8>, FetchFailure> {
+    let broken_off = |_| FetchFailure::broken_off(url, response.status());
+    let body = response.array_buffer().map_err(broken_off)?;
+    let buffer = JsFuture::from(body).await.map_err(broken_off)?;
     let array = Uint8Array::new(&buffer);
     let mut bytes = vec![0; array.length() as usize];
     array.copy_to(&mut bytes);
     Ok(bytes)
 }
 
-fn fetch_with_str(url: &str) -> Result<js_sys::Promise, JsValue> {
+fn fetch_with_str(url: &str) -> Result<js_sys::Promise, FetchFailure> {
     let global = js_sys::global();
     if let Some(window) = global.dyn_ref::<Window>() {
         Ok(window.fetch_with_str(url))
     } else if let Some(worker) = global.dyn_ref::<WorkerGlobalScope>() {
         Ok(worker.fetch_with_str(url))
     } else {
-        Err(JsValue::from_str("Global scope does not support fetch"))
+        Err(FetchFailure::without_fetch(url))
     }
 }
 
@@ -861,6 +888,24 @@ mod tests {
             choose_archive("pypi", r#"{"urls": []}"#).unwrap_err(),
             "No downloadable artifacts found for PyPI package"
         );
+    }
+
+    #[test]
+    fn a_listing_is_read_as_text() {
+        assert_eq!(
+            listing_text("pypi", br#"{"urls": []}"#),
+            Ok(r#"{"urls": []}"#)
+        );
+    }
+
+    #[test]
+    fn a_listing_that_is_not_text_names_the_registry_it_came_from() {
+        let err = listing_text("composer", b"\xff\xfe").unwrap_err();
+        assert!(
+            err.starts_with("The composer listing is not valid UTF-8: "),
+            "{err}"
+        );
+        assert!(!err.contains("PyPI"), "{err}");
     }
 
     #[test]
