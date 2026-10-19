@@ -9,6 +9,7 @@ cargo test                                   # host-side suite, fast and offline
 cargo test <name>                            # tests whose name contains <name>
 cargo test --test public_api                 # the Rust surface as diffpack-server sees it
 wasm-pack test --headless --chrome           # the wasm bindings in a real browser, against crates.io
+DIFFPACK_PROXY_ORIGIN=https://diffpack-proxy.philipswiezak.workers.dev wasm-pack test --headless --chrome --test web_live_proxy   # one real Composer comparison through the proxy
 wasm-pack build --release --target web --scope philfreshman   # writes pkg/ (gitignored, never commit it)
 .githooks/pre-commit                         # fmt, clippy -D warnings, cargo deny, cargo audit: what CI runs
 cargo run --release --example bench -- <from-archive> <to-archive> [--registry NAME]
@@ -19,9 +20,10 @@ Turn the hook on once per clone with `git config core.hooksPath .githooks`. Do n
 ## Rules that are easy to break
 
 - The crate has two public surfaces. Changing either one's signatures or output is a breaking change.
-  - The `#[wasm_bindgen]` functions in `src/lib.rs` are the app's contract, tested by `tests/web.rs`. That includes the values they reject with: a failed download is an `Error` with `code`, `status` and `resetsAt`, as the README's "Errors" section lists.
+  - The `#[wasm_bindgen]` functions in `src/lib.rs` are the app's contract, tested by `tests/web*.rs`. `tests/web_without_proxy.rs` is its own page so no proxy origin is set there. That includes the values they reject with: a failed download is an `Error` with `code`, `status` and `resetsAt`, as the README's "Errors" section lists.
   - The plain items `src/lib.rs` re-exports (`get_diff_content`, `build_patch`, `archive_source`, `unpack_archive`, …) are diffpack-server's contract, tested by `tests/public_api.rs`. The text `get_diff_content` and `build_patch` render is part of it, because the tree's line counts come from the same rendering. `choose_archive(registry, version, listing)` takes the version since 0.5.0, so Composer can pick one version out of Packagist's listing of all of them.
 - Host tests cannot call the `#[wasm_bindgen]` functions: creating a `JsValue` outside wasm32 aborts the process. Test them in `tests/web.rs`.
+- In wasm, Composer goes through diffpack-proxy (`set_proxy_origin`, `src/proxy.rs`); native code uses the direct URLs. The proxy's HTTP contract is `../diffpack-proxy/docs/contract.md`.
 - A change here reaches no one until it is released and each consumer moves its pin (the npm version in diffpack, the `tag` and `engine::VERSION` in diffpack-server).
 - The release profile (`opt-level = 's'` with `lto`) was picked by measuring with `examples/bench.rs`: about half the compute time of `'z'` for roughly 70 KB more. Measure again before changing it.
 - `WASM_PACK_VERSION` is pinned in both `ci.yml` and `release.yml`; keep the two equal. The wasm-bindgen crates (`wasm-bindgen*`, `js-sys`, `web-sys`, `serde-wasm-bindgen`) move together.
