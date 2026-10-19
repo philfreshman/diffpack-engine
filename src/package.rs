@@ -11,6 +11,8 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Response, Window, WorkerGlobalScope};
 use zip::ZipArchive;
 
+use crate::composer;
+use crate::failure::Failure;
 use crate::fetch_failure::FetchFailure;
 use crate::types::{FileMapEntry, FileType};
 
@@ -42,22 +44,30 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
         "pypi" => Ok(ArchiveSource::Listing {
             url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
         }),
+        "composer" => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
         _ => Err(unsupported_registry(registry)),
     }
 }
 
-pub fn choose_archive(registry: &str, listing: &str) -> Result<String, String> {
+pub fn choose_archive(registry: &str, version: &str, listing: &str) -> Result<String, String> {
+    choose_archive_url(registry, version, listing).map_err(Failure::into_message)
+}
+
+fn choose_archive_url(registry: &str, version: &str, listing: &str) -> Result<String, Failure> {
     match registry {
-        "pypi" => {
-            let metadata: PyPiResponse = serde_json::from_str(listing)
-                .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
-            select_pypi_sdist_url(&metadata.urls)
-        }
-        "npm" | "crates" | "go" => Err(format!(
+        "composer" => composer::find_dist(version, listing).map(|dist| dist.direct_url),
+        "pypi" => choose_pypi_archive(listing).map_err(Failure::Uncoded),
+        "npm" | "crates" | "go" => Err(Failure::Uncoded(format!(
             "Registry {registry} serves its archive directly; there is no listing to choose from"
-        )),
-        _ => Err(unsupported_registry(registry)),
+        ))),
+        _ => Err(Failure::Uncoded(unsupported_registry(registry))),
     }
+}
+
+fn choose_pypi_archive(listing: &str) -> Result<String, String> {
+    let metadata: PyPiResponse = serde_json::from_str(listing)
+        .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
+    select_pypi_sdist_url(&metadata.urls)
 }
 
 pub fn unpack_archive(
@@ -71,7 +81,7 @@ pub fn unpack_archive(
             let files = extract_archive_bytes_with(bytes, false)?;
             Ok(strip_go_module_root(files, pkg, version))
         }
-        "npm" | "crates" | "pypi" => extract_archive_bytes(bytes),
+        "npm" | "crates" | "pypi" | "composer" => extract_archive_bytes(bytes),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -90,7 +100,7 @@ pub async fn fetch_and_extract_package(
         ArchiveSource::Listing { url } => {
             let listing = fetch_bytes(&url).await?;
             let listing = listing_text(registry, &listing).map_err(js_error)?;
-            choose_archive(registry, listing).map_err(js_error)?
+            choose_archive_url(registry, version, listing)?
         }
     };
     let bytes = fetch_bytes(&archive_url).await?;
@@ -856,6 +866,73 @@ mod tests {
         }
     }
 
+    fn listing(url: &str) -> ArchiveSource {
+        ArchiveSource::Listing {
+            url: url.to_string(),
+        }
+    }
+
+    #[test]
+    fn composer_is_found_through_the_packagist_listing_of_the_whole_package() {
+        assert_eq!(
+            archive_source("composer", "monolog/monolog", "3.12.1").unwrap(),
+            listing("https://repo.packagist.org/p2/monolog/monolog.json")
+        );
+        assert_eq!(
+            archive_source("composer", "symfony/password-hasher", "v8.0.0").unwrap(),
+            listing("https://repo.packagist.org/p2/symfony/password-hasher.json")
+        );
+    }
+
+    #[test]
+    fn a_composer_name_is_looked_up_in_lowercase() {
+        assert_eq!(
+            archive_source("composer", "Monolog/Monolog", "3.12.1").unwrap(),
+            listing("https://repo.packagist.org/p2/monolog/monolog.json")
+        );
+    }
+
+    #[test]
+    fn every_name_composer_allows_has_a_listing() {
+        for name in [
+            "a/b",
+            "vendor0/package9",
+            "my_vendor/my_package",
+            "my.vendor/my.package",
+            "my-vendor/my-package",
+            "vendor/double--dash",
+            "v-e_n.d/p_a.c-k--g",
+        ] {
+            assert!(archive_source("composer", name, "1.0.0").is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_composer_rejects_has_no_listing() {
+        for name in [
+            "",
+            "monolog",
+            "/monolog",
+            "monolog/",
+            "a/b/c",
+            "-vendor/package",
+            "vendor-/package",
+            "vendor/_package",
+            "vendor/package.",
+            "ven--dor/package",
+            "vendor/pack---age",
+            "vendor/pack_-age",
+            "vendor/pack..age",
+            "ven dor/package",
+            "vendor/pack%2fage",
+            "../../evil/package",
+            "vendor/package?x=1",
+        ] {
+            let err = archive_source("composer", name, "1.0.0").unwrap_err();
+            assert_eq!(err, format!("Invalid Composer package name: {name}"));
+        }
+    }
+
     #[test]
     fn an_unknown_registry_has_no_archive_source() {
         assert_eq!(
@@ -874,18 +951,18 @@ mod tests {
             ]
         }"#;
         assert_eq!(
-            choose_archive("pypi", listing).unwrap(),
+            choose_archive("pypi", "1.0", listing).unwrap(),
             "https://files/x-1.0.tar.gz"
         );
     }
 
     #[test]
     fn a_pypi_listing_that_is_malformed_or_empty_is_an_error() {
-        assert!(choose_archive("pypi", "not json")
+        assert!(choose_archive("pypi", "1.0", "not json")
             .unwrap_err()
             .starts_with("Failed to parse PyPI metadata: "));
         assert_eq!(
-            choose_archive("pypi", r#"{"urls": []}"#).unwrap_err(),
+            choose_archive("pypi", "1.0", r#"{"urls": []}"#).unwrap_err(),
             "No downloadable artifacts found for PyPI package"
         );
     }
@@ -909,13 +986,32 @@ mod tests {
     }
 
     #[test]
+    fn a_composer_listing_yields_the_direct_archive_of_the_asked_version() {
+        let listing = r#"{
+            "minified": "composer/2.0",
+            "packages": {"o/r": [
+                {"version": "v2.0.0", "dist": {"url": "https://api.github.com/repos/o/r/zipball/2222222222222222222222222222222222222222"}},
+                {"version": "v1.0.0", "dist": {"url": "https://api.github.com/repos/o/r/zipball/1111111111111111111111111111111111111111"}}
+            ]}
+        }"#;
+        assert_eq!(
+            choose_archive("composer", "1.0.0", listing).unwrap(),
+            "https://codeload.github.com/o/r/legacy.zip/1111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            choose_archive("composer", "3.0.0", listing).unwrap_err(),
+            "Packagist lists no version 3.0.0 of o/r"
+        );
+    }
+
+    #[test]
     fn a_registry_without_a_listing_cannot_choose_from_one() {
         for registry in ["npm", "crates", "go"] {
-            let err = choose_archive(registry, r#"{"urls": []}"#).unwrap_err();
+            let err = choose_archive(registry, "1.0", r#"{"urls": []}"#).unwrap_err();
             assert!(err.contains("no listing"), "{registry}: {err}");
         }
         assert_eq!(
-            choose_archive("maven", "{}").unwrap_err(),
+            choose_archive("maven", "1.0", "{}").unwrap_err(),
             "Unsupported registry: maven"
         );
     }
@@ -964,6 +1060,33 @@ mod tests {
             let files = unpack_archive(registry, "pkg", "1.0.0", &archive).unwrap();
             assert_eq!(sorted_keys(&files), expected, "{registry}");
         }
+    }
+
+    #[test]
+    fn a_composer_zip_unpacks_without_the_folder_its_host_wraps_it_in() {
+        let archive = zip_bytes(&[
+            (
+                "Seldaek-monolog-d7059e4/composer.json".to_string(),
+                b"{}".to_vec(),
+            ),
+            (
+                "Seldaek-monolog-d7059e4/src/Monolog/Logger.php".to_string(),
+                b"<?php\n".to_vec(),
+            ),
+        ]);
+
+        let files = unpack_archive("composer", "monolog/monolog", "3.12.1", &archive).unwrap();
+
+        assert_eq!(
+            sorted_keys(&files),
+            [
+                "composer.json",
+                "src",
+                "src/Monolog",
+                "src/Monolog/Logger.php"
+            ]
+        );
+        assert_eq!(files["src/Monolog/Logger.php"].content, "<?php\n");
     }
 
     #[test]

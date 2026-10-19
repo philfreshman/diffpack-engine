@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-diffpack-engine fetches, extracts and diffs package archives (npm, crates.io, PyPI, Go). It ships twice: as a wasm module on npm (`@philfreshman/diffpack-engine`) for the diffpack web app, and as a Cargo git dependency, pinned by tag, for diffpack-server. Cross-repo context is in `../CLAUDE.md`.
+diffpack-engine fetches, extracts and diffs package archives (npm, crates.io, PyPI, Packagist/Composer, Go). It ships twice: as a wasm module on npm (`@philfreshman/diffpack-engine`) for the diffpack web app, and as a Cargo git dependency, pinned by tag, for diffpack-server. Cross-repo context is in `../CLAUDE.md`.
 
 ## Commands
 
@@ -20,7 +20,7 @@ Turn the hook on once per clone with `git config core.hooksPath .githooks`. Do n
 
 - The crate has two public surfaces. Changing either one's signatures or output is a breaking change.
   - The `#[wasm_bindgen]` functions in `src/lib.rs` are the app's contract, tested by `tests/web.rs`. That includes the values they reject with: a failed download is an `Error` with `code`, `status` and `resetsAt`, as the README's "Errors" section lists.
-  - The plain items `src/lib.rs` re-exports (`get_diff_content`, `build_patch`, `archive_source`, `unpack_archive`, …) are diffpack-server's contract, tested by `tests/public_api.rs`. The text `get_diff_content` and `build_patch` render is part of it, because the tree's line counts come from the same rendering.
+  - The plain items `src/lib.rs` re-exports (`get_diff_content`, `build_patch`, `archive_source`, `unpack_archive`, …) are diffpack-server's contract, tested by `tests/public_api.rs`. The text `get_diff_content` and `build_patch` render is part of it, because the tree's line counts come from the same rendering. `choose_archive(registry, version, listing)` takes the version since 0.5.0, so Composer can pick one version out of Packagist's listing of all of them.
 - Host tests cannot call the `#[wasm_bindgen]` functions: creating a `JsValue` outside wasm32 aborts the process. Test them in `tests/web.rs`.
 - A change here reaches no one until it is released and each consumer moves its pin (the npm version in diffpack, the `tag` and `engine::VERSION` in diffpack-server).
 - The release profile (`opt-level = 's'` with `lto`) was picked by measuring with `examples/bench.rs`: about half the compute time of `'z'` for roughly 70 KB more. Measure again before changing it.
