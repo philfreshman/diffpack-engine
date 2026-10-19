@@ -173,9 +173,24 @@ pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<Str
 async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
     let response = fetch_response(url).await?;
     if !response.ok() {
-        return Err(FetchFailure::answered(url, response.status()).into());
+        return Err(failed_answer(url, &response).await.into());
     }
     read_body(&response).await
+}
+
+const PROXY_ERROR_HEADER: &str = "Diffpack-Proxy-Error";
+
+async fn failed_answer(url: &str, response: &Response) -> FetchFailure {
+    let proxy_error_body = if is_proxy_answer(response) {
+        Some(read_body(response).await.unwrap_or_default())
+    } else {
+        None
+    };
+    FetchFailure::from_answer(url, response.status(), proxy_error_body.as_deref())
+}
+
+fn is_proxy_answer(response: &Response) -> bool {
+    response.headers().has(PROXY_ERROR_HEADER).unwrap_or(false)
 }
 
 async fn fetch_response(url: &str) -> Result<Response, JsValue> {
