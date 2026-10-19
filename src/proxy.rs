@@ -87,21 +87,21 @@ fn is_https_origin(origin: &str) -> bool {
     origin
         .strip_prefix(HTTPS)
         .and_then(host_and_port)
-        .is_some_and(is_host_name)
+        .is_some_and(|(host, _)| is_host_name(host))
 }
 
 fn is_local_development_origin(origin: &str) -> bool {
     origin
         .strip_prefix(HTTP)
         .and_then(host_and_port)
-        .is_some_and(|host| LOCAL_DEVELOPMENT_HOSTS.contains(&host))
+        .is_some_and(|(host, port)| port.is_some() && LOCAL_DEVELOPMENT_HOSTS.contains(&host))
 }
 
-fn host_and_port(authority: &str) -> Option<&str> {
+fn host_and_port(authority: &str) -> Option<(&str, Option<&str>)> {
     match authority.split_once(':') {
-        Some((host, port)) if is_port(port) => Some(host),
+        Some((host, port)) if is_port(port) => Some((host, Some(port))),
         Some(_) => None,
-        None => Some(authority),
+        None => Some((authority, None)),
     }
 }
 
@@ -143,11 +143,7 @@ mod tests {
 
     #[test]
     fn a_local_development_origin_is_accepted_over_http() {
-        for origin in [
-            "http://localhost:8787",
-            "http://127.0.0.1:8787",
-            "http://localhost",
-        ] {
+        for origin in ["http://localhost:8787", "http://127.0.0.1:8787"] {
             assert_eq!(parsed(origin), Ok(origin.to_owned()));
         }
         assert_eq!(
@@ -174,6 +170,9 @@ mod tests {
             "http://proxy.example",
             "http://localhost.evil.example:8787",
             "http://127.0.0.2:8787",
+            "http://localhost",
+            "http://127.0.0.1",
+            "http://localhost/",
             "ftp://proxy.example",
             "HTTPS://proxy.example",
         ] {
