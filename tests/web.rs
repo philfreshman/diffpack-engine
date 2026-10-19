@@ -177,8 +177,8 @@ function replaceFetch(stub) {
     globalThis.fetch = stub;
 }
 
-export function answer_every_fetch_with(status) {
-    replaceFetch(async () => new Response("", { status }));
+export function answer_every_fetch_with(status, body) {
+    replaceFetch(async () => new Response(body, { status }));
 }
 
 export function answer_every_fetch_as_the_proxy(status, code, body) {
@@ -210,7 +210,7 @@ export function restore_fetch() {
 }
 "#)]
 extern "C" {
-    fn answer_every_fetch_with(status: u16);
+    fn answer_every_fetch_with(status: u16, body: &str);
     fn answer_every_fetch_as_the_proxy(status: u16, code: &str, body: &str);
     fn answer_every_fetch_with_a_body_that_breaks_off();
     fn reject_every_fetch();
@@ -219,6 +219,8 @@ extern "C" {
 
 const UNPUBLISHED_ITOA_DOWNLOAD: &str =
     "https://static.crates.io/crates/itoa/itoa-0.0.0-stub.crate";
+
+const QUOTA_EXHAUSTED_BODY: &str = r#"{"error":"quota_exhausted","message":"diffpack's Composer proxy has used today's free allowance. It resets at 00:00 UTC.","resetsAt":"2026-10-20T00:00:00Z"}"#;
 
 async fn rejection_of_a_stubbed_download() -> JsValue {
     let result = prefetch_package(
@@ -244,8 +246,8 @@ fn number_property(error: &JsValue, name: &str) -> Option<f64> {
 }
 
 #[wasm_bindgen_test]
-async fn a_download_answered_with_404_rejects_with_not_found_and_its_status() {
-    answer_every_fetch_with(404);
+async fn a_plain_404_rejects_with_not_found_even_when_its_body_looks_like_a_proxy_error() {
+    answer_every_fetch_with(404, QUOTA_EXHAUSTED_BODY);
 
     let error = rejection_of_a_stubbed_download().await;
 
@@ -273,11 +275,7 @@ async fn a_download_that_never_got_an_answer_rejects_as_a_network_failure() {
 
 #[wasm_bindgen_test]
 async fn a_proxy_quota_answer_rejects_with_its_code_and_reset_time() {
-    answer_every_fetch_as_the_proxy(
-        503,
-        "quota_exhausted",
-        r#"{"error":"quota_exhausted","message":"diffpack's Composer proxy has used today's free allowance. It resets at 00:00 UTC.","resetsAt":"2026-10-20T00:00:00Z"}"#,
-    );
+    answer_every_fetch_as_the_proxy(503, "quota_exhausted", QUOTA_EXHAUSTED_BODY);
 
     let error = rejection_of_a_stubbed_download().await;
 
