@@ -89,14 +89,17 @@ pub async fn fetch_and_extract_package(
         ArchiveSource::Archive { url } => url,
         ArchiveSource::Listing { url } => {
             let listing = fetch_bytes(&url).await?;
-            let listing = std::str::from_utf8(&listing).map_err(|err| {
-                JsValue::from_str(&format!("Failed to parse PyPI metadata: {err}"))
-            })?;
+            let listing = listing_text(registry, &listing).map_err(js_error)?;
             choose_archive(registry, listing).map_err(js_error)?
         }
     };
     let bytes = fetch_bytes(&archive_url).await?;
     unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+}
+
+fn listing_text<'a>(registry: &str, listing: &'a [u8]) -> Result<&'a str, String> {
+    std::str::from_utf8(listing)
+        .map_err(|err| format!("The {registry} listing is not valid UTF-8: {err}"))
 }
 
 fn js_error(err: String) -> JsValue {
@@ -883,6 +886,24 @@ mod tests {
             choose_archive("pypi", r#"{"urls": []}"#).unwrap_err(),
             "No downloadable artifacts found for PyPI package"
         );
+    }
+
+    #[test]
+    fn a_listing_is_read_as_text() {
+        assert_eq!(
+            listing_text("pypi", br#"{"urls": []}"#),
+            Ok(r#"{"urls": []}"#)
+        );
+    }
+
+    #[test]
+    fn a_listing_that_is_not_text_names_the_registry_it_came_from() {
+        let err = listing_text("composer", b"\xff\xfe").unwrap_err();
+        assert!(
+            err.starts_with("The composer listing is not valid UTF-8: "),
+            "{err}"
+        );
+        assert!(!err.contains("PyPI"), "{err}");
     }
 
     #[test]
