@@ -226,10 +226,15 @@ fn an_archive_url_is_chosen_out_of_a_pypi_listing() {
     }"#;
 
     assert_eq!(
-        choose_archive("pypi", listing).unwrap(),
+        choose_archive("pypi", "1.0", listing).unwrap(),
         "https://files/x-1.0.tar.gz"
     );
-    assert!(choose_archive("crates", listing).is_err());
+    assert_eq!(
+        choose_archive("pypi", "any other version", listing).unwrap(),
+        "https://files/x-1.0.tar.gz",
+        "a PyPI listing belongs to one version already"
+    );
+    assert!(choose_archive("crates", "1.0", listing).is_err());
 }
 
 fn go_module_zip() -> Vec<u8> {

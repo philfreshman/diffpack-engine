@@ -48,7 +48,7 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
     }
 }
 
-pub fn choose_archive(registry: &str, listing: &str) -> Result<String, String> {
+pub fn choose_archive(registry: &str, _version: &str, listing: &str) -> Result<String, String> {
     match registry {
         "pypi" => {
             let metadata: PyPiResponse = serde_json::from_str(listing)
@@ -92,7 +92,7 @@ pub async fn fetch_and_extract_package(
         ArchiveSource::Listing { url } => {
             let listing = fetch_bytes(&url).await?;
             let listing = listing_text(registry, &listing).map_err(js_error)?;
-            choose_archive(registry, listing).map_err(js_error)?
+            choose_archive(registry, version, listing).map_err(js_error)?
         }
     };
     let bytes = fetch_bytes(&archive_url).await?;
@@ -943,18 +943,18 @@ mod tests {
             ]
         }"#;
         assert_eq!(
-            choose_archive("pypi", listing).unwrap(),
+            choose_archive("pypi", "1.0", listing).unwrap(),
             "https://files/x-1.0.tar.gz"
         );
     }
 
     #[test]
     fn a_pypi_listing_that_is_malformed_or_empty_is_an_error() {
-        assert!(choose_archive("pypi", "not json")
+        assert!(choose_archive("pypi", "1.0", "not json")
             .unwrap_err()
             .starts_with("Failed to parse PyPI metadata: "));
         assert_eq!(
-            choose_archive("pypi", r#"{"urls": []}"#).unwrap_err(),
+            choose_archive("pypi", "1.0", r#"{"urls": []}"#).unwrap_err(),
             "No downloadable artifacts found for PyPI package"
         );
     }
@@ -980,11 +980,11 @@ mod tests {
     #[test]
     fn a_registry_without_a_listing_cannot_choose_from_one() {
         for registry in ["npm", "crates", "go"] {
-            let err = choose_archive(registry, r#"{"urls": []}"#).unwrap_err();
+            let err = choose_archive(registry, "1.0", r#"{"urls": []}"#).unwrap_err();
             assert!(err.contains("no listing"), "{registry}: {err}");
         }
         assert_eq!(
-            choose_archive("maven", "{}").unwrap_err(),
+            choose_archive("maven", "1.0", "{}").unwrap_err(),
             "Unsupported registry: maven"
         );
     }
