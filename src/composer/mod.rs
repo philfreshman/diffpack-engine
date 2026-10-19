@@ -341,7 +341,14 @@ mod tests {
 
     #[test]
     fn a_listing_that_is_not_a_packagist_document_is_an_uncoded_error() {
-        for listing in ["not json", r#"{"packages": []}"#, r#"{"packages": {}}"#] {
+        for listing in [
+            "not json",
+            r#"{"packages": []}"#,
+            r#"{"packages": {}}"#,
+            r#"{"packages": {"o/r": [null]}}"#,
+            r#"{"packages": {"o/r": null}}"#,
+            r#"{"packages": {"o/r": [{"version": "1.0.0"}, 7]}}"#,
+        ] {
             match find_dist("1.0.0", listing) {
                 Err(Failure::Uncoded(message)) => {
                     assert!(
