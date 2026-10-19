@@ -1,3 +1,6 @@
+use js_sys::{Error, Reflect};
+use wasm_bindgen::JsValue;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureCode {
     NotFound,
@@ -15,6 +18,32 @@ impl FailureCode {
             FailureCode::Network => "network",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodedFailure {
+    pub message: String,
+    pub code: String,
+    pub status: Option<u16>,
+    pub resets_at: Option<String>,
+}
+
+impl From<CodedFailure> for JsValue {
+    fn from(failure: CodedFailure) -> Self {
+        let error = Error::new(&failure.message);
+        set_property(&error, "code", failure.code.into());
+        if let Some(status) = failure.status {
+            set_property(&error, "status", status.into());
+        }
+        if let Some(resets_at) = failure.resets_at {
+            set_property(&error, "resetsAt", resets_at.into());
+        }
+        error.into()
+    }
+}
+
+fn set_property(error: &Error, name: &str, value: JsValue) {
+    Reflect::set(error, &name.into(), &value).expect("a new Error accepts any property");
 }
 
 #[cfg(test)]

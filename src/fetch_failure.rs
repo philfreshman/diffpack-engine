@@ -1,8 +1,7 @@
-use js_sys::{Error, Reflect};
 use serde::Deserialize;
 use wasm_bindgen::JsValue;
 
-use crate::failure::FailureCode;
+use crate::failure::{CodedFailure, FailureCode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchFailure {
@@ -111,22 +110,21 @@ fn download_failed_with_status(url: &str, status: u16) -> String {
     format!("Couldn't download {url} (HTTP {status})")
 }
 
-impl From<FetchFailure> for JsValue {
+impl From<FetchFailure> for CodedFailure {
     fn from(failure: FetchFailure) -> Self {
-        let error = Error::new(&failure.message());
-        set_property(&error, "code", failure.code().into());
-        if let Some(status) = failure.status() {
-            set_property(&error, "status", status.into());
+        CodedFailure {
+            message: failure.message(),
+            code: failure.code().to_owned(),
+            status: failure.status(),
+            resets_at: failure.resets_at().map(str::to_owned),
         }
-        if let Some(resets_at) = failure.resets_at() {
-            set_property(&error, "resetsAt", resets_at.into());
-        }
-        error.into()
     }
 }
 
-fn set_property(error: &Error, name: &str, value: JsValue) {
-    Reflect::set(error, &name.into(), &value).expect("a new Error accepts any property");
+impl From<FetchFailure> for JsValue {
+    fn from(failure: FetchFailure) -> Self {
+        CodedFailure::from(failure).into()
+    }
 }
 
 fn code_for_status(status: u16) -> FailureCode {
@@ -259,5 +257,29 @@ mod tests {
         let failure = proxy_answer(503, "<html><h1>Error 1027</h1></html>");
         assert_eq!(failure.code(), FailureCode::UpstreamFailed.as_str());
         assert_eq!(failure.status(), Some(503));
+    }
+
+    #[test]
+    fn a_download_failure_becomes_a_coded_failure_with_all_it_knows() {
+        assert_eq!(
+            CodedFailure::from(proxy_answer(503, QUOTA_EXHAUSTED_BODY)),
+            CodedFailure {
+                message: format!(
+                    "Couldn't download {URL} (HTTP 503): diffpack's Composer proxy has used today's free allowance. It resets at 00:00 UTC."
+                ),
+                code: "quota_exhausted".to_string(),
+                status: Some(503),
+                resets_at: Some("2026-10-20T00:00:00Z".to_string()),
+            }
+        );
+        assert_eq!(
+            CodedFailure::from(FetchFailure::unanswered(URL)),
+            CodedFailure {
+                message: format!("Couldn't download {URL} (no answer)"),
+                code: FailureCode::Network.as_str().to_string(),
+                status: None,
+                resets_at: None,
+            }
+        );
     }
 }
