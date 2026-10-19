@@ -9,10 +9,12 @@ const VERSION: &str = "version";
 const DIST: &str = "dist";
 const DIST_URL: &str = "url";
 
+type Entries = Vec<Map<String, Value>>;
+
 #[derive(Deserialize)]
 struct Document {
     minified: Option<String>,
-    packages: HashMap<String, Vec<Map<String, Value>>>,
+    packages: HashMap<String, Entries>,
 }
 
 pub struct PackageListing {
@@ -28,22 +30,31 @@ pub struct ListedVersion {
 pub fn read(listing: &str) -> Result<PackageListing, String> {
     let document: Document = serde_json::from_str(listing).map_err(unreadable)?;
     let is_minified = document.minified.as_deref() == Some(MINIFIED_FORMAT);
-    let (name, entries) = document
-        .packages
-        .into_iter()
-        .next()
-        .ok_or_else(|| unreadable("it names no package"))?;
+    let (name, entries) = only_package(document.packages)?;
     Ok(PackageListing {
         name,
         versions: expand(entries, is_minified),
     })
 }
 
+fn only_package(packages: HashMap<String, Entries>) -> Result<(String, Entries), String> {
+    if packages.len() > 1 {
+        return Err(unreadable(format!(
+            "it lists {} packages instead of one",
+            packages.len()
+        )));
+    }
+    packages
+        .into_iter()
+        .next()
+        .ok_or_else(|| unreadable("it names no package"))
+}
+
 fn unreadable(reason: impl std::fmt::Display) -> String {
     format!("Failed to read the Packagist listing: {reason}")
 }
 
-fn expand(entries: Vec<Map<String, Value>>, is_minified: bool) -> Vec<ListedVersion> {
+fn expand(entries: Entries, is_minified: bool) -> Vec<ListedVersion> {
     let mut carried = Map::new();
     entries
         .into_iter()

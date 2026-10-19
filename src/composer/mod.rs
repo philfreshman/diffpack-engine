@@ -353,4 +353,20 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_listing_must_describe_exactly_one_package() {
+        let listing = format!(
+            r#"{{"packages": {{"a/one": [{{"version": "1.0.0", "dist": {first}}}], "b/two": [{{"version": "1.0.0", "dist": {second}}}]}}}}"#,
+            first = github_dist(SHA_A),
+            second = github_dist(SHA_B),
+        );
+        assert_eq!(
+            find_dist("1.0.0", &listing),
+            Err(Failure::Uncoded(
+                "Failed to read the Packagist listing: it lists 2 packages instead of one"
+                    .to_string()
+            ))
+        );
+    }
 }
