@@ -2,7 +2,7 @@
 name = "diffpack-engine"
 version = "0.4.1"
 edition = "2021"
-description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI and Go, as a WebAssembly module."
+description = "Fetches, extracts and diffs package archives from crates.io, npm, PyPI, Packagist and Go, as a WebAssembly module."
 repository = "git+https://github.com/philfreshman/diffpack-engine.git"
 
 publish = false
