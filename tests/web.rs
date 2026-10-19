@@ -188,6 +188,17 @@ export function answer_every_fetch_as_the_proxy(status, code, body) {
     }));
 }
 
+export function answer_every_fetch_with_a_body_that_breaks_off() {
+    replaceFetch(async () => {
+        const brokenBody = new ReadableStream({
+            start(controller) {
+                controller.error(new TypeError("network error"));
+            },
+        });
+        return new Response(brokenBody, { status: 200 });
+    });
+}
+
 export function reject_every_fetch() {
     replaceFetch(async () => {
         throw new TypeError("Failed to fetch");
@@ -201,6 +212,7 @@ export function restore_fetch() {
 extern "C" {
     fn answer_every_fetch_with(status: u16);
     fn answer_every_fetch_as_the_proxy(status: u16, code: &str, body: &str);
+    fn answer_every_fetch_with_a_body_that_breaks_off();
     fn reject_every_fetch();
     fn restore_fetch();
 }
@@ -279,4 +291,15 @@ async fn a_proxy_quota_answer_rejects_with_its_code_and_reset_time() {
         text_property(&error, "resetsAt").as_deref(),
         Some("2026-10-20T00:00:00Z")
     );
+}
+
+#[wasm_bindgen_test]
+async fn a_download_whose_body_breaks_off_rejects_as_a_network_failure_with_its_status() {
+    answer_every_fetch_with_a_body_that_breaks_off();
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("network"));
+    assert_eq!(number_property(&error, "status"), Some(200.0));
 }

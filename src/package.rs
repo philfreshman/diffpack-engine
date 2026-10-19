@@ -178,14 +178,14 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
     if !response.ok() {
         return Err(failed_answer(url, &response).await.into());
     }
-    read_body(&response).await
+    Ok(read_body(url, &response).await?)
 }
 
 const PROXY_ERROR_HEADER: &str = "Diffpack-Proxy-Error";
 
 async fn failed_answer(url: &str, response: &Response) -> FetchFailure {
     let proxy_error_body = if is_proxy_answer(response) {
-        Some(read_body(response).await.unwrap_or_default())
+        Some(read_body(url, response).await.unwrap_or_default())
     } else {
         None
     };
@@ -203,8 +203,10 @@ async fn fetch_response(url: &str) -> Result<Response, JsValue> {
     answer.dyn_into()
 }
 
-async fn read_body(response: &Response) -> Result<Vec<u8>, JsValue> {
-    let buffer = JsFuture::from(response.array_buffer()?).await?;
+async fn read_body(url: &str, response: &Response) -> Result<Vec<u8>, FetchFailure> {
+    let broken_off = |_| FetchFailure::broken_off(url, response.status());
+    let body = response.array_buffer().map_err(broken_off)?;
+    let buffer = JsFuture::from(body).await.map_err(broken_off)?;
     let array = Uint8Array::new(&buffer);
     let mut bytes = vec![0; array.length() as usize];
     array.copy_to(&mut bytes);

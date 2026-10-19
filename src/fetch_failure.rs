@@ -18,6 +18,10 @@ pub enum FetchFailure {
         url: String,
         status: u16,
     },
+    BrokenOff {
+        url: String,
+        status: u16,
+    },
     Unanswered {
         url: String,
     },
@@ -55,6 +59,13 @@ impl FetchFailure {
         }
     }
 
+    pub fn broken_off(url: &str, status: u16) -> Self {
+        FetchFailure::BrokenOff {
+            url: url.to_owned(),
+            status,
+        }
+    }
+
     pub fn unanswered(url: &str) -> Self {
         FetchFailure::Unanswered {
             url: url.to_owned(),
@@ -66,7 +77,9 @@ impl FetchFailure {
             FetchFailure::Answered { status, .. } => code_for_status(*status).as_str(),
             FetchFailure::AnsweredByProxy { error, .. } => &error.code,
             FetchFailure::UnreadableProxyAnswer { .. } => FailureCode::UpstreamFailed.as_str(),
-            FetchFailure::Unanswered { .. } => FailureCode::Network.as_str(),
+            FetchFailure::BrokenOff { .. } | FetchFailure::Unanswered { .. } => {
+                FailureCode::Network.as_str()
+            }
         }
     }
 
@@ -74,7 +87,8 @@ impl FetchFailure {
         match self {
             FetchFailure::Answered { status, .. }
             | FetchFailure::AnsweredByProxy { status, .. }
-            | FetchFailure::UnreadableProxyAnswer { status, .. } => Some(*status),
+            | FetchFailure::UnreadableProxyAnswer { status, .. }
+            | FetchFailure::BrokenOff { status, .. } => Some(*status),
             FetchFailure::Unanswered { .. } => None,
         }
     }
@@ -101,6 +115,9 @@ impl FetchFailure {
                 }
                 None => download_failed_with_status(url, *status),
             },
+            FetchFailure::BrokenOff { url, status } => {
+                format!("Couldn't download {url} (cut off after HTTP {status})")
+            }
             FetchFailure::Unanswered { url } => format!("Couldn't download {url} (no answer)"),
         }
     }
@@ -280,6 +297,18 @@ mod tests {
                 status: None,
                 resets_at: None,
             }
+        );
+    }
+
+    #[test]
+    fn a_download_whose_body_broke_off_is_a_network_failure_that_keeps_its_status() {
+        let failure = FetchFailure::broken_off(URL, 200);
+        assert_eq!(failure.code(), FailureCode::Network.as_str());
+        assert_eq!(failure.status(), Some(200));
+        assert_eq!(failure.resets_at(), None);
+        assert_eq!(
+            failure.message(),
+            format!("Couldn't download {URL} (cut off after HTTP 200)")
         );
     }
 }

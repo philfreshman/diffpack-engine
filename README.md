@@ -41,7 +41,7 @@ A failed download rejects with an `Error`. Its `message` is a sentence for peopl
 | `not_found` | The registry answered 404. |
 | `rate_limited` | The registry answered 429. |
 | `upstream_failed` | The registry answered with any other status that is not a success, or the diffpack proxy sent an answer whose body could not be read. |
-| `network` | `fetch` itself failed: offline, blocked by CORS, or the host could not be found. |
+| `network` | `fetch` itself failed (offline, blocked by CORS, or the host could not be found), or the download broke off after the answer arrived, in which case `status` is set. |
 | any other | An answer from the diffpack proxy (it sends a `Diffpack-Proxy-Error` header) passes its own `error` code through, for example `quota_exhausted` or `archive_not_listed`. |
 
 Other errors, such as an unsupported registry or an archive that cannot be extracted, reject with a plain string and have no `code`. These error values are part of the wasm contract, so changing a code or its meaning is a breaking change.
