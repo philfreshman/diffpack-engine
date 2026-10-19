@@ -106,14 +106,21 @@ fn host_and_port(authority: &str) -> Option<(&str, Option<&str>)> {
 }
 
 fn is_port(port: &str) -> bool {
-    !port.is_empty() && port.chars().all(|character| character.is_ascii_digit())
+    port.chars().all(|character| character.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|number| number > 0)
 }
 
 fn is_host_name(host: &str) -> bool {
-    !host.is_empty()
-        && host
+    host.split('.').all(is_host_label)
+}
+
+fn is_host_label(label: &str) -> bool {
+    !label.is_empty()
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || ".-".contains(character))
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
 }
 
 #[cfg(test)]
@@ -136,6 +143,9 @@ mod tests {
                 "https://diffpack-proxy.philipswiezak.workers.dev",
             ),
             ("https://proxy.example:8443", "https://proxy.example:8443"),
+            ("https://proxy.example:65535", "https://proxy.example:65535"),
+            ("https://a-b.c-d.example", "https://a-b.c-d.example"),
+            ("https://localhost", "https://localhost"),
         ] {
             assert_eq!(parsed(given), Ok(kept.to_owned()), "{given}");
         }
@@ -173,6 +183,17 @@ mod tests {
             "http://localhost",
             "http://127.0.0.1",
             "http://localhost/",
+            "https://proxy.example:65536",
+            "https://proxy.example:99999",
+            "https://proxy.example:0",
+            "http://localhost:99999",
+            "https://.",
+            "https://-",
+            "https://a..b",
+            "https://.proxy.example",
+            "https://proxy.example.",
+            "https://-proxy.example",
+            "https://proxy-.example",
             "ftp://proxy.example",
             "HTTPS://proxy.example",
         ] {
