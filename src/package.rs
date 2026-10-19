@@ -19,6 +19,8 @@ use crate::in_flight::InFlight;
 use crate::proxy;
 use crate::types::{FileMapEntry, FileType};
 
+const COMPOSER: &str = "composer";
+
 #[derive(Deserialize)]
 pub struct PyPiResponse {
     pub urls: Vec<PyPiUrl>,
@@ -47,7 +49,7 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
         "pypi" => Ok(ArchiveSource::Listing {
             url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
         }),
-        "composer" => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
+        COMPOSER => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -58,7 +60,7 @@ pub fn choose_archive(registry: &str, version: &str, listing: &str) -> Result<St
 
 fn choose_archive_url(registry: &str, version: &str, listing: &str) -> Result<String, Failure> {
     match registry {
-        "composer" => composer::find_dist(version, listing).map(|dist| dist.direct_url),
+        COMPOSER => composer::find_dist(version, listing).map(|dist| dist.direct_url),
         "pypi" => choose_pypi_archive(listing).map_err(Failure::Uncoded),
         "npm" | "crates" | "go" => Err(Failure::Uncoded(format!(
             "Registry {registry} serves its archive directly; there is no listing to choose from"
@@ -84,7 +86,7 @@ pub fn unpack_archive(
             let files = extract_archive_bytes_with(bytes, false)?;
             Ok(strip_go_module_root(files, pkg, version))
         }
-        "npm" | "crates" | "pypi" | "composer" => extract_archive_bytes(bytes),
+        "npm" | "crates" | "pypi" | COMPOSER => extract_archive_bytes(bytes),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -104,8 +106,6 @@ pub async fn fetch_and_extract_package(
     };
     unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
 }
-
-const COMPOSER: &str = "composer";
 
 async fn fetch_registry_archive(
     registry: &str,
