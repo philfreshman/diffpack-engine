@@ -14,6 +14,7 @@ use zip::ZipArchive;
 use crate::composer;
 use crate::failure::Failure;
 use crate::fetch_failure::FetchFailure;
+use crate::proxy;
 use crate::types::{FileMapEntry, FileType};
 
 #[derive(Deserialize)]
@@ -95,6 +96,20 @@ pub async fn fetch_and_extract_package(
     pkg: &str,
     version: &str,
 ) -> Result<HashMap<String, FileMapEntry>, JsValue> {
+    let bytes = match registry {
+        COMPOSER => fetch_composer_archive(pkg, version).await?,
+        _ => fetch_registry_archive(registry, pkg, version).await?,
+    };
+    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+}
+
+const COMPOSER: &str = "composer";
+
+async fn fetch_registry_archive(
+    registry: &str,
+    pkg: &str,
+    version: &str,
+) -> Result<Vec<u8>, JsValue> {
     let archive_url = match archive_source(registry, pkg, version).map_err(js_error)? {
         ArchiveSource::Archive { url } => url,
         ArchiveSource::Listing { url } => {
@@ -103,8 +118,15 @@ pub async fn fetch_and_extract_package(
             choose_archive_url(registry, version, listing)?
         }
     };
-    let bytes = fetch_bytes(&archive_url).await?;
-    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+    fetch_bytes(&archive_url).await
+}
+
+async fn fetch_composer_archive(pkg: &str, version: &str) -> Result<Vec<u8>, JsValue> {
+    let proxy = proxy::required()?;
+    let listing = fetch_bytes(&proxy.listing_url(pkg).map_err(js_error)?).await?;
+    let listing = listing_text(COMPOSER, &listing).map_err(js_error)?;
+    let dist = composer::find_dist(version, listing)?;
+    fetch_bytes(&proxy.archive_url(pkg, &dist.listed_url).map_err(js_error)?).await
 }
 
 fn listing_text<'a>(registry: &str, listing: &'a [u8]) -> Result<&'a str, String> {

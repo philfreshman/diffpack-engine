@@ -4,6 +4,7 @@ mod failure;
 mod fetch_failure;
 mod package;
 mod patch;
+mod proxy;
 mod store;
 mod types;
 
@@ -98,6 +99,11 @@ fn diff_from_cache(
         to_content,
         ignore_whitespace,
     ))
+}
+
+#[wasm_bindgen]
+pub fn set_proxy_origin(origin: String) -> Result<(), JsValue> {
+    proxy::configure(&origin).map_err(|message| JsValue::from_str(&message))
 }
 
 #[wasm_bindgen]

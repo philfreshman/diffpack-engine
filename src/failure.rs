@@ -10,6 +10,7 @@ pub enum FailureCode {
     NoSuchVersion,
     NoArchive,
     UnsupportedArchiveHost,
+    ProxyNotConfigured,
 }
 
 impl FailureCode {
@@ -22,6 +23,7 @@ impl FailureCode {
             FailureCode::NoSuchVersion => "no_such_version",
             FailureCode::NoArchive => "no_archive",
             FailureCode::UnsupportedArchiveHost => "unsupported_archive_host",
+            FailureCode::ProxyNotConfigured => "proxy_not_configured",
         }
     }
 }
@@ -108,6 +110,10 @@ mod tests {
         assert_eq!(
             FailureCode::UnsupportedArchiveHost.as_str(),
             "unsupported_archive_host"
+        );
+        assert_eq!(
+            FailureCode::ProxyNotConfigured.as_str(),
+            "proxy_not_configured"
         );
     }
 }

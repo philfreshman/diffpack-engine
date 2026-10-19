@@ -1,5 +1,6 @@
 use diffpack_engine::{
     build_diff_tree_for_package, get_diff_for_comparison, get_diff_for_path, prefetch_package,
+    set_proxy_origin,
 };
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
@@ -10,6 +11,9 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct DiffEntry {
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
     status: String,
     #[serde(default)]
     children: Option<Vec<DiffEntry>>,
@@ -205,8 +209,35 @@ export function reject_every_fetch() {
     });
 }
 
+let routes = [];
+let requested = [];
+
+export function route_fetch(fragment, status, body, proxyErrorCode) {
+    routes.push({ fragment, status, body: new Uint8Array(body), proxyErrorCode });
+    replaceFetch(async (url) => {
+        const address = String(url);
+        requested.push(address);
+        const route = routes.find((candidate) => address.includes(candidate.fragment));
+        if (!route) {
+            throw new TypeError(`No stubbed route for ${address}`);
+        }
+        const headers = route.proxyErrorCode ? { "Diffpack-Proxy-Error": route.proxyErrorCode } : {};
+        return new Response(route.body, { status: route.status, headers });
+    });
+}
+
+export function requested_urls() {
+    return requested.slice();
+}
+
+export function listed_url_parameter(address) {
+    return new URL(address).searchParams.get("url");
+}
+
 export function restore_fetch() {
     globalThis.fetch = realFetch;
+    routes = [];
+    requested = [];
 }
 "#)]
 extern "C" {
@@ -214,6 +245,9 @@ extern "C" {
     fn answer_every_fetch_as_the_proxy(status: u16, code: &str, body: &str);
     fn answer_every_fetch_with_a_body_that_breaks_off();
     fn reject_every_fetch();
+    fn route_fetch(fragment: &str, status: u16, body: &[u8], proxy_error_code: Option<String>);
+    fn requested_urls() -> Vec<String>;
+    fn listed_url_parameter(address: &str) -> Option<String>;
     fn restore_fetch();
 }
 
@@ -311,7 +345,14 @@ const STUB_COMPOSER_LISTING: &str = r#"{
     ]}
 }"#;
 
+const TEST_PROXY: &str = "https://proxy.test";
+
+fn use_the_test_proxy() {
+    set_proxy_origin(TEST_PROXY.to_string()).expect("the test proxy origin is valid");
+}
+
 async fn rejection_of_a_composer_version(version: &str) -> JsValue {
+    use_the_test_proxy();
     answer_every_fetch_with(200, STUB_COMPOSER_LISTING);
     let result = prefetch_package(
         "composer".to_string(),
@@ -359,5 +400,136 @@ async fn a_composer_version_without_an_archive_rejects_with_no_archive() {
     assert_eq!(
         text_property(&error, "message").as_deref(),
         Some("Packagist lists no archive for stub/package 3.0.0")
+    );
+}
+
+#[wasm_bindgen_test]
+fn set_proxy_origin_accepts_an_origin_and_refuses_one_with_a_path() {
+    assert!(set_proxy_origin("https://proxy.test/".to_string()).is_ok());
+
+    let refusal = set_proxy_origin("https://proxy.test/v1".to_string())
+        .expect_err("an origin with a path is refused");
+
+    assert!(
+        refusal
+            .as_string()
+            .is_some_and(|message| message.starts_with("Invalid proxy origin")),
+        "{refusal:?}"
+    );
+}
+
+const ROUTED_SHA_ONE: &str = "1111111111111111111111111111111111111111";
+const ROUTED_SHA_TWO: &str = "2222222222222222222222222222222222222222";
+
+fn routed_listed_url(sha: &str) -> String {
+    format!("https://api.github.com/repos/stub/routed/zipball/{sha}")
+}
+
+fn routed_listing() -> String {
+    format!(
+        r#"{{"minified": "composer/2.0", "packages": {{"stub/routed": [
+            {{"version": "2.0.0", "dist": {{"type": "zip", "url": "{two}"}}}},
+            {{"version": "1.0.0", "dist": {{"type": "zip", "url": "{one}"}}}}
+        ]}}}}"#,
+        two = routed_listed_url(ROUTED_SHA_TWO),
+        one = routed_listed_url(ROUTED_SHA_ONE),
+    )
+}
+
+fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (path, content) in entries {
+        writer.start_file(*path, options).unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+fn route_the_routed_package() {
+    route_fetch(
+        "/v1/composer/p2/stub/routed.json",
+        200,
+        routed_listing().as_bytes(),
+        None,
+    );
+    route_fetch(
+        ROUTED_SHA_ONE,
+        200,
+        &zip_of(&[
+            ("stub-routed-1111111/composer.json", "{}"),
+            ("stub-routed-1111111/src/Thing.php", "<?php echo 1;\n"),
+        ]),
+        None,
+    );
+    route_fetch(
+        ROUTED_SHA_TWO,
+        200,
+        &zip_of(&[
+            ("stub-routed-2222222/composer.json", "{}"),
+            ("stub-routed-2222222/src/Thing.php", "<?php echo 2;\n"),
+        ]),
+        None,
+    );
+}
+
+async fn build_the_routed_package() -> (Result<JsValue, JsValue>, Vec<String>) {
+    let tree = build_diff_tree_for_package(
+        "composer".to_string(),
+        "stub/routed".to_string(),
+        "1.0.0".to_string(),
+        "2.0.0".to_string(),
+        0.6,
+        false,
+    )
+    .await;
+    let requested = requested_urls();
+    restore_fetch();
+    (tree, requested)
+}
+
+fn modified_files(entry: &DiffEntry, out: &mut Vec<String>) {
+    if entry.entry_type == "file" && entry.status == "modified" {
+        out.push(entry.path.clone());
+    }
+    for child in entry.children.iter().flatten() {
+        modified_files(child, out);
+    }
+}
+
+#[wasm_bindgen_test]
+async fn a_composer_build_downloads_its_listing_and_archives_through_the_proxy() {
+    use_the_test_proxy();
+    route_the_routed_package();
+
+    let (tree, requested) = build_the_routed_package().await;
+
+    let tree: DiffEntry = serde_wasm_bindgen::from_value(tree.expect("the stubbed build works"))
+        .expect("diff tree should deserialize");
+    let mut modified = Vec::new();
+    modified_files(&tree, &mut modified);
+    assert_eq!(modified, ["src/Thing.php"]);
+
+    assert!(
+        requested.contains(&format!("{TEST_PROXY}/v1/composer/p2/stub/routed.json")),
+        "{requested:?}"
+    );
+    let mut listed_urls: Vec<String> = requested
+        .iter()
+        .filter(|url| {
+            url.starts_with(&format!(
+                "{TEST_PROXY}/v1/composer/archive?package=stub/routed&url="
+            ))
+        })
+        .filter_map(|url| listed_url_parameter(url))
+        .collect();
+    listed_urls.sort();
+    assert_eq!(
+        listed_urls,
+        [
+            routed_listed_url(ROUTED_SHA_ONE),
+            routed_listed_url(ROUTED_SHA_TWO)
+        ]
     );
 }

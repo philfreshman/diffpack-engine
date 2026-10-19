@@ -8,13 +8,17 @@ const VENDOR_SEPARATORS: &[&str] = &["_", ".", "-"];
 const PACKAGE_SEPARATORS: &[&str] = &["_", ".", "-", "--"];
 
 pub fn listing_url(name: &str) -> Result<String, String> {
+    package_path(name).map(|path| format!("{PACKAGIST_LISTING_ROOT}/{path}.json"))
+}
+
+pub fn package_path(name: &str) -> Result<String, String> {
     let lowercase = name.to_ascii_lowercase();
     match lowercase.split_once('/') {
         Some((vendor, package))
             if is_name_part(vendor, VENDOR_SEPARATORS)
                 && is_name_part(package, PACKAGE_SEPARATORS) =>
         {
-            Ok(format!("{PACKAGIST_LISTING_ROOT}/{vendor}/{package}.json"))
+            Ok(lowercase)
         }
         _ => Err(format!("Invalid Composer package name: {name}")),
     }
