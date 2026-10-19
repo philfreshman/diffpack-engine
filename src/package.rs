@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Cursor, Read};
+use std::rc::Rc;
 
 use flate2::read::GzDecoder;
 use js_sys::Uint8Array;
@@ -14,6 +15,7 @@ use zip::ZipArchive;
 use crate::composer;
 use crate::failure::Failure;
 use crate::fetch_failure::FetchFailure;
+use crate::in_flight::InFlight;
 use crate::proxy;
 use crate::types::{FileMapEntry, FileType};
 
@@ -121,9 +123,23 @@ async fn fetch_registry_archive(
     fetch_bytes(&archive_url).await
 }
 
+type ListingRequest = Result<Rc<Vec<u8>>, JsValue>;
+
+thread_local! {
+    static LISTINGS: Rc<InFlight<ListingRequest>> = InFlight::new();
+}
+
+async fn fetch_shared_listing(url: String) -> ListingRequest {
+    let listings = LISTINGS.with(Rc::clone);
+    let key = url.clone();
+    let request =
+        listings.join_or_start(&key, || async move { fetch_bytes(&url).await.map(Rc::new) });
+    request.await
+}
+
 async fn fetch_composer_archive(pkg: &str, version: &str) -> Result<Vec<u8>, JsValue> {
     let proxy = proxy::required()?;
-    let listing = fetch_bytes(&proxy.listing_url(pkg).map_err(js_error)?).await?;
+    let listing = fetch_shared_listing(proxy.listing_url(pkg).map_err(js_error)?).await?;
     let listing = listing_text(COMPOSER, &listing).map_err(js_error)?;
     let dist = composer::find_dist(version, listing)?;
     fetch_bytes(&proxy.archive_url(pkg, &dist.listed_url).map_err(js_error)?).await

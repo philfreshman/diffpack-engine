@@ -421,18 +421,18 @@ fn set_proxy_origin_accepts_an_origin_and_refuses_one_with_a_path() {
 const ROUTED_SHA_ONE: &str = "1111111111111111111111111111111111111111";
 const ROUTED_SHA_TWO: &str = "2222222222222222222222222222222222222222";
 
-fn routed_listed_url(sha: &str) -> String {
-    format!("https://api.github.com/repos/stub/routed/zipball/{sha}")
+fn routed_listed_url(package: &str, sha: &str) -> String {
+    format!("https://api.github.com/repos/{package}/zipball/{sha}")
 }
 
-fn routed_listing() -> String {
+fn routed_listing(package: &str) -> String {
     format!(
-        r#"{{"minified": "composer/2.0", "packages": {{"stub/routed": [
+        r#"{{"minified": "composer/2.0", "packages": {{"{package}": [
             {{"version": "2.0.0", "dist": {{"type": "zip", "url": "{two}"}}}},
             {{"version": "1.0.0", "dist": {{"type": "zip", "url": "{one}"}}}}
         ]}}}}"#,
-        two = routed_listed_url(ROUTED_SHA_TWO),
-        one = routed_listed_url(ROUTED_SHA_ONE),
+        two = routed_listed_url(package, ROUTED_SHA_TWO),
+        one = routed_listed_url(package, ROUTED_SHA_ONE),
     )
 }
 
@@ -447,11 +447,11 @@ fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
-fn route_the_routed_package() {
+fn route_a_package_with_two_versions(package: &str) {
     route_fetch(
-        "/v1/composer/p2/stub/routed.json",
+        &format!("/v1/composer/p2/{package}.json"),
         200,
-        routed_listing().as_bytes(),
+        routed_listing(package).as_bytes(),
         None,
     );
     route_fetch(
@@ -474,10 +474,10 @@ fn route_the_routed_package() {
     );
 }
 
-async fn build_the_routed_package() -> (Result<JsValue, JsValue>, Vec<String>) {
+async fn build_both_versions_of(package: &str) -> (Result<JsValue, JsValue>, Vec<String>) {
     let tree = build_diff_tree_for_package(
         "composer".to_string(),
-        "stub/routed".to_string(),
+        package.to_string(),
         "1.0.0".to_string(),
         "2.0.0".to_string(),
         0.6,
@@ -500,10 +500,11 @@ fn modified_files(entry: &DiffEntry, out: &mut Vec<String>) {
 
 #[wasm_bindgen_test]
 async fn a_composer_build_downloads_its_listing_and_archives_through_the_proxy() {
+    let package = "stub/through-the-proxy";
     use_the_test_proxy();
-    route_the_routed_package();
+    route_a_package_with_two_versions(package);
 
-    let (tree, requested) = build_the_routed_package().await;
+    let (tree, requested) = build_both_versions_of(package).await;
 
     let tree: DiffEntry = serde_wasm_bindgen::from_value(tree.expect("the stubbed build works"))
         .expect("diff tree should deserialize");
@@ -512,14 +513,14 @@ async fn a_composer_build_downloads_its_listing_and_archives_through_the_proxy()
     assert_eq!(modified, ["src/Thing.php"]);
 
     assert!(
-        requested.contains(&format!("{TEST_PROXY}/v1/composer/p2/stub/routed.json")),
+        requested.contains(&format!("{TEST_PROXY}/v1/composer/p2/{package}.json")),
         "{requested:?}"
     );
     let mut listed_urls: Vec<String> = requested
         .iter()
         .filter(|url| {
             url.starts_with(&format!(
-                "{TEST_PROXY}/v1/composer/archive?package=stub/routed&url="
+                "{TEST_PROXY}/v1/composer/archive?package={package}&url="
             ))
         })
         .filter_map(|url| listed_url_parameter(url))
@@ -528,8 +529,8 @@ async fn a_composer_build_downloads_its_listing_and_archives_through_the_proxy()
     assert_eq!(
         listed_urls,
         [
-            routed_listed_url(ROUTED_SHA_ONE),
-            routed_listed_url(ROUTED_SHA_TWO)
+            routed_listed_url(package, ROUTED_SHA_ONE),
+            routed_listed_url(package, ROUTED_SHA_TWO)
         ]
     );
 }
@@ -592,4 +593,20 @@ async fn a_proxy_quota_answer_on_a_composer_listing_arrives_with_its_reset_time(
         text_property(&error, "resetsAt").as_deref(),
         Some("2026-10-20T00:00:00Z")
     );
+}
+
+#[wasm_bindgen_test]
+async fn a_composer_build_of_two_versions_requests_their_listing_once() {
+    let package = "stub/listing-once";
+    use_the_test_proxy();
+    route_a_package_with_two_versions(package);
+
+    let (tree, requested) = build_both_versions_of(package).await;
+
+    tree.expect("the stubbed build works");
+    let listing_requests = requested
+        .iter()
+        .filter(|url| url.contains("/v1/composer/p2/"))
+        .count();
+    assert_eq!(listing_requests, 1, "{requested:?}");
 }

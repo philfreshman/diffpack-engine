@@ -2,6 +2,7 @@ mod composer;
 mod core;
 mod failure;
 mod fetch_failure;
+mod in_flight;
 mod package;
 mod patch;
 mod proxy;
