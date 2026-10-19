@@ -12,6 +12,7 @@ use web_sys::{Response, Window, WorkerGlobalScope};
 use zip::ZipArchive;
 
 use crate::composer;
+use crate::failure::Failure;
 use crate::fetch_failure::FetchFailure;
 use crate::types::{FileMapEntry, FileType};
 
@@ -48,8 +49,11 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
     }
 }
 
-pub fn choose_archive(registry: &str, _version: &str, listing: &str) -> Result<String, String> {
+pub fn choose_archive(registry: &str, version: &str, listing: &str) -> Result<String, String> {
     match registry {
+        "composer" => composer::find_dist(version, listing)
+            .map(|dist| dist.direct_url)
+            .map_err(Failure::into_message),
         "pypi" => {
             let metadata: PyPiResponse = serde_json::from_str(listing)
                 .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
@@ -975,6 +979,25 @@ mod tests {
             "{err}"
         );
         assert!(!err.contains("PyPI"), "{err}");
+    }
+
+    #[test]
+    fn a_composer_listing_yields_the_direct_archive_of_the_asked_version() {
+        let listing = r#"{
+            "minified": "composer/2.0",
+            "packages": {"o/r": [
+                {"version": "v2.0.0", "dist": {"url": "https://api.github.com/repos/o/r/zipball/2222222222222222222222222222222222222222"}},
+                {"version": "v1.0.0", "dist": {"url": "https://api.github.com/repos/o/r/zipball/1111111111111111111111111111111111111111"}}
+            ]}
+        }"#;
+        assert_eq!(
+            choose_archive("composer", "1.0.0", listing).unwrap(),
+            "https://codeload.github.com/o/r/legacy.zip/1111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            choose_archive("composer", "3.0.0", listing).unwrap_err(),
+            "Packagist lists no version 3.0.0 of o/r"
+        );
     }
 
     #[test]
