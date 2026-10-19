@@ -77,7 +77,7 @@ pub fn unpack_archive(
             let files = extract_archive_bytes_with(bytes, false)?;
             Ok(strip_go_module_root(files, pkg, version))
         }
-        "npm" | "crates" | "pypi" => extract_archive_bytes(bytes),
+        "npm" | "crates" | "pypi" | "composer" => extract_archive_bytes(bytes),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -1056,6 +1056,33 @@ mod tests {
             let files = unpack_archive(registry, "pkg", "1.0.0", &archive).unwrap();
             assert_eq!(sorted_keys(&files), expected, "{registry}");
         }
+    }
+
+    #[test]
+    fn a_composer_zip_unpacks_without_the_folder_its_host_wraps_it_in() {
+        let archive = zip_bytes(&[
+            (
+                "Seldaek-monolog-d7059e4/composer.json".to_string(),
+                b"{}".to_vec(),
+            ),
+            (
+                "Seldaek-monolog-d7059e4/src/Monolog/Logger.php".to_string(),
+                b"<?php\n".to_vec(),
+            ),
+        ]);
+
+        let files = unpack_archive("composer", "monolog/monolog", "3.12.1", &archive).unwrap();
+
+        assert_eq!(
+            sorted_keys(&files),
+            [
+                "composer.json",
+                "src",
+                "src/Monolog",
+                "src/Monolog/Logger.php"
+            ]
+        );
+        assert_eq!(files["src/Monolog/Logger.php"].content, "<?php\n");
     }
 
     #[test]
