@@ -2,6 +2,8 @@ use js_sys::{Error, Reflect};
 use serde::Deserialize;
 use wasm_bindgen::JsValue;
 
+use crate::failure::FailureCode;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchFailure {
     Answered {
@@ -41,7 +43,6 @@ impl ProxyError {
 
 const NOT_FOUND: u16 = 404;
 const TOO_MANY_REQUESTS: u16 = 429;
-const UPSTREAM_FAILED: &str = "upstream_failed";
 
 impl FetchFailure {
     pub fn from_answer(url: &str, status: u16, proxy_error_body: Option<&[u8]>) -> Self {
@@ -63,10 +64,10 @@ impl FetchFailure {
 
     pub fn code(&self) -> &str {
         match self {
-            FetchFailure::Answered { status, .. } => code_for_status(*status),
+            FetchFailure::Answered { status, .. } => code_for_status(*status).as_str(),
             FetchFailure::AnsweredByProxy { error, .. } => &error.code,
-            FetchFailure::UnreadableProxyAnswer { .. } => UPSTREAM_FAILED,
-            FetchFailure::Unanswered { .. } => "network",
+            FetchFailure::UnreadableProxyAnswer { .. } => FailureCode::UpstreamFailed.as_str(),
+            FetchFailure::Unanswered { .. } => FailureCode::Network.as_str(),
         }
     }
 
@@ -128,11 +129,11 @@ fn set_property(error: &Error, name: &str, value: JsValue) {
     Reflect::set(error, &name.into(), &value).expect("a new Error accepts any property");
 }
 
-fn code_for_status(status: u16) -> &'static str {
+fn code_for_status(status: u16) -> FailureCode {
     match status {
-        NOT_FOUND => "not_found",
-        TOO_MANY_REQUESTS => "rate_limited",
-        _ => UPSTREAM_FAILED,
+        NOT_FOUND => FailureCode::NotFound,
+        TOO_MANY_REQUESTS => FailureCode::RateLimited,
+        _ => FailureCode::UpstreamFailed,
     }
 }
 
@@ -158,10 +159,16 @@ mod tests {
 
     #[test]
     fn a_plain_answer_is_coded_by_its_status() {
-        assert_eq!(plain_answer(404).code(), "not_found");
-        assert_eq!(plain_answer(429).code(), "rate_limited");
-        assert_eq!(plain_answer(500).code(), "upstream_failed");
-        assert_eq!(plain_answer(403).code(), "upstream_failed");
+        assert_eq!(plain_answer(404).code(), FailureCode::NotFound.as_str());
+        assert_eq!(plain_answer(429).code(), FailureCode::RateLimited.as_str());
+        assert_eq!(
+            plain_answer(500).code(),
+            FailureCode::UpstreamFailed.as_str()
+        );
+        assert_eq!(
+            plain_answer(403).code(),
+            FailureCode::UpstreamFailed.as_str()
+        );
     }
 
     #[test]
@@ -182,7 +189,7 @@ mod tests {
     #[test]
     fn a_download_that_got_no_answer_is_a_network_failure_without_a_status() {
         let failure = FetchFailure::unanswered(URL);
-        assert_eq!(failure.code(), "network");
+        assert_eq!(failure.code(), FailureCode::Network.as_str());
         assert_eq!(failure.status(), None);
         assert_eq!(failure.resets_at(), None);
         assert_eq!(
@@ -232,7 +239,11 @@ mod tests {
         ];
         for body in broken_bodies {
             let failure = proxy_answer(404, body);
-            assert_eq!(failure.code(), "upstream_failed", "{body}");
+            assert_eq!(
+                failure.code(),
+                FailureCode::UpstreamFailed.as_str(),
+                "{body}"
+            );
             assert_eq!(failure.status(), Some(404), "{body}");
             assert_eq!(failure.resets_at(), None, "{body}");
             assert_eq!(
@@ -246,7 +257,7 @@ mod tests {
     #[test]
     fn a_proxy_answer_whose_body_is_not_json_is_an_upstream_failure_with_its_status() {
         let failure = proxy_answer(503, "<html><h1>Error 1027</h1></html>");
-        assert_eq!(failure.code(), "upstream_failed");
+        assert_eq!(failure.code(), FailureCode::UpstreamFailed.as_str());
         assert_eq!(failure.status(), Some(503));
     }
 }

@@ -1,4 +1,5 @@
 mod core;
+mod failure;
 mod fetch_failure;
 mod package;
 mod patch;
