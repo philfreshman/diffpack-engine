@@ -19,7 +19,7 @@ Turn the hook on once per clone with `git config core.hooksPath .githooks`. Do n
 ## Rules that are easy to break
 
 - The crate has two public surfaces. Changing either one's signatures or output is a breaking change.
-  - The `#[wasm_bindgen]` functions in `src/lib.rs` are the app's contract, tested by `tests/web.rs`.
+  - The `#[wasm_bindgen]` functions in `src/lib.rs` are the app's contract, tested by `tests/web.rs`. That includes the values they reject with: a failed download is an `Error` with `code`, `status` and `resetsAt`, as the README's "Errors" section lists.
   - The plain items `src/lib.rs` re-exports (`get_diff_content`, `build_patch`, `archive_source`, `unpack_archive`, …) are diffpack-server's contract, tested by `tests/public_api.rs`. The text `get_diff_content` and `build_patch` render is part of it, because the tree's line counts come from the same rendering.
 - Host tests cannot call the `#[wasm_bindgen]` functions: creating a `JsValue` outside wasm32 aborts the process. Test them in `tests/web.rs`.
 - A change here reaches no one until it is released and each consumer moves its pin (the npm version in diffpack, the `tag` and `engine::VERSION` in diffpack-server).
