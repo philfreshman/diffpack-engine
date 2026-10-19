@@ -80,6 +80,15 @@ impl From<CodedFailure> for JsValue {
     }
 }
 
+impl From<Failure> for JsValue {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Coded(failure) => failure.into(),
+            Failure::Uncoded(message) => JsValue::from_str(&message),
+        }
+    }
+}
+
 fn set_property(error: &Error, name: &str, value: JsValue) {
     Reflect::set(error, &name.into(), &value).expect("a new Error accepts any property");
 }

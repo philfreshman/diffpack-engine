@@ -301,3 +301,50 @@ async fn a_download_whose_body_breaks_off_rejects_as_a_network_failure_with_its_
     assert_eq!(text_property(&error, "code").as_deref(), Some("network"));
     assert_eq!(number_property(&error, "status"), Some(200.0));
 }
+
+const STUB_COMPOSER_LISTING: &str = r#"{
+    "minified": "composer/2.0",
+    "packages": {"stub/package": [
+        {"version": "2.0.0", "dist": {"type": "zip", "url": "https://git.drupalcode.org/stub/package/-/archive/2.0.0.zip"}},
+        {"version": "1.0.0", "dist": {"type": "zip", "url": "https://api.github.com/repos/stub/package/zipball/1111111111111111111111111111111111111111"}}
+    ]}
+}"#;
+
+async fn rejection_of_a_composer_version(version: &str) -> JsValue {
+    answer_every_fetch_with(200, STUB_COMPOSER_LISTING);
+    let result = prefetch_package(
+        "composer".to_string(),
+        "stub/package".to_string(),
+        version.to_string(),
+    )
+    .await;
+    restore_fetch();
+    result.expect_err("the stubbed listing cannot yield a download")
+}
+
+#[wasm_bindgen_test]
+async fn a_composer_version_packagist_does_not_list_rejects_with_no_such_version() {
+    let error = rejection_of_a_composer_version("9.9.9").await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(
+        text_property(&error, "code").as_deref(),
+        Some("no_such_version")
+    );
+    assert_eq!(
+        text_property(&error, "message").as_deref(),
+        Some("Packagist lists no version 9.9.9 of stub/package")
+    );
+    assert!(property(&error, "status").is_undefined());
+}
+
+#[wasm_bindgen_test]
+async fn a_composer_archive_on_an_unsupported_host_rejects_with_unsupported_archive_host() {
+    let error = rejection_of_a_composer_version("2.0.0").await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(
+        text_property(&error, "code").as_deref(),
+        Some("unsupported_archive_host")
+    );
+}

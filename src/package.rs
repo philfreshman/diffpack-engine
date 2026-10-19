@@ -50,20 +50,24 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
 }
 
 pub fn choose_archive(registry: &str, version: &str, listing: &str) -> Result<String, String> {
+    choose_archive_url(registry, version, listing).map_err(Failure::into_message)
+}
+
+fn choose_archive_url(registry: &str, version: &str, listing: &str) -> Result<String, Failure> {
     match registry {
-        "composer" => composer::find_dist(version, listing)
-            .map(|dist| dist.direct_url)
-            .map_err(Failure::into_message),
-        "pypi" => {
-            let metadata: PyPiResponse = serde_json::from_str(listing)
-                .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
-            select_pypi_sdist_url(&metadata.urls)
-        }
-        "npm" | "crates" | "go" => Err(format!(
+        "composer" => composer::find_dist(version, listing).map(|dist| dist.direct_url),
+        "pypi" => choose_pypi_archive(listing).map_err(Failure::Uncoded),
+        "npm" | "crates" | "go" => Err(Failure::Uncoded(format!(
             "Registry {registry} serves its archive directly; there is no listing to choose from"
-        )),
-        _ => Err(unsupported_registry(registry)),
+        ))),
+        _ => Err(Failure::Uncoded(unsupported_registry(registry))),
     }
+}
+
+fn choose_pypi_archive(listing: &str) -> Result<String, String> {
+    let metadata: PyPiResponse = serde_json::from_str(listing)
+        .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
+    select_pypi_sdist_url(&metadata.urls)
 }
 
 pub fn unpack_archive(
@@ -96,7 +100,7 @@ pub async fn fetch_and_extract_package(
         ArchiveSource::Listing { url } => {
             let listing = fetch_bytes(&url).await?;
             let listing = listing_text(registry, &listing).map_err(js_error)?;
-            choose_archive(registry, version, listing).map_err(js_error)?
+            choose_archive_url(registry, version, listing)?
         }
     };
     let bytes = fetch_bytes(&archive_url).await?;
