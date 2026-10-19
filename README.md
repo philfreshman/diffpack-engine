@@ -26,6 +26,21 @@ const { data, isDiff } = get_diff_for_comparison("npm", "left-pad", "1.2.0", "1.
 
 Registries are `npm`, `crates`, `pypi`, `composer` and `go`. A Composer package is named `vendor/package`, and its version matches with or without a leading `v` (`3.12.1` or `v3.12.1`). `0.75` is the similarity threshold for rename detection, and the last argument ignores whitespace when `true`. `get_diff_for_comparison` reads from the session cache, so fetch both versions first with `build_diff_tree_for_package` or `prefetch_package`.
 
+### Composer and the download proxy
+
+Packagist and the archive hosts send no CORS header, so in the browser Composer packages are downloaded through [diffpack-proxy](https://github.com/philfreshman/diffpack-proxy). Call `set_proxy_origin` once, after `init()` and before any Composer call:
+
+```js
+import init, { set_proxy_origin } from "@philfreshman/diffpack-engine";
+
+await init();
+set_proxy_origin("https://diffpack-proxy.philipswiezak.workers.dev");
+```
+
+- The origin is `https://<host>` with an optional port, or `http://localhost:<port>` or `http://127.0.0.1:<port>` for a local `wrangler dev`. One trailing slash is removed; a path, query or user info is refused with a plain string error, and the origin set before stays.
+- The listing is read from `{origin}/v1/composer/p2/{vendor}/{package}.json` and each archive from `{origin}/v1/composer/archive?package={vendor}/{package}&url={URL as Packagist lists it}`. Both versions of one comparison share a single listing request.
+- Other registries are fetched directly and do not need it.
+
 ## Errors
 
 A failed download, or a Composer version that cannot be downloaded, rejects with an `Error`. Its `message` is a sentence for people, such as `Couldn't download https://static.crates.io/crates/itoa/itoa-9.9.9.crate (HTTP 404)`, and it carries these properties:
@@ -42,6 +57,8 @@ A failed download, or a Composer version that cannot be downloaded, rejects with
 | `rate_limited` | The registry answered 429. |
 | `upstream_failed` | The registry answered with any other status that is not a success, or the diffpack proxy sent an answer whose body could not be read. |
 | `network` | `fetch` itself failed (offline, blocked by CORS, or the host could not be found), the global scope has no `fetch`, or the download broke off after the answer arrived, in which case `status` is set. |
+| `proxy_unreachable` | `fetch` failed on a URL of the diffpack proxy. Cloudflare answers without CORS once the proxy's free daily limit is used up, so it may be over that limit. |
+| `proxy_not_configured` | A Composer package was requested before `set_proxy_origin` was called. |
 | `no_such_version` | Packagist lists no such version of the Composer package. |
 | `no_archive` | Packagist lists the version but no archive to download. |
 | `unsupported_archive_host` | The archive is not on GitHub, Bitbucket or gitlab.com, or its URL does not have the shape those hosts use. The message names the host. |

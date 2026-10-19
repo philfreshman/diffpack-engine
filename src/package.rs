@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Cursor, Read};
+use std::rc::Rc;
 
 use flate2::read::GzDecoder;
 use js_sys::Uint8Array;
@@ -14,7 +15,11 @@ use zip::ZipArchive;
 use crate::composer;
 use crate::failure::Failure;
 use crate::fetch_failure::FetchFailure;
+use crate::in_flight::InFlight;
+use crate::proxy;
 use crate::types::{FileMapEntry, FileType};
+
+const COMPOSER: &str = "composer";
 
 #[derive(Deserialize)]
 pub struct PyPiResponse {
@@ -44,7 +49,7 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
         "pypi" => Ok(ArchiveSource::Listing {
             url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
         }),
-        "composer" => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
+        COMPOSER => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -55,7 +60,7 @@ pub fn choose_archive(registry: &str, version: &str, listing: &str) -> Result<St
 
 fn choose_archive_url(registry: &str, version: &str, listing: &str) -> Result<String, Failure> {
     match registry {
-        "composer" => composer::find_dist(version, listing).map(|dist| dist.direct_url),
+        COMPOSER => composer::find_dist(version, listing).map(|dist| dist.direct_url),
         "pypi" => choose_pypi_archive(listing).map_err(Failure::Uncoded),
         "npm" | "crates" | "go" => Err(Failure::Uncoded(format!(
             "Registry {registry} serves its archive directly; there is no listing to choose from"
@@ -81,7 +86,7 @@ pub fn unpack_archive(
             let files = extract_archive_bytes_with(bytes, false)?;
             Ok(strip_go_module_root(files, pkg, version))
         }
-        "npm" | "crates" | "pypi" | "composer" => extract_archive_bytes(bytes),
+        "npm" | "crates" | "pypi" | COMPOSER => extract_archive_bytes(bytes),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -95,6 +100,18 @@ pub async fn fetch_and_extract_package(
     pkg: &str,
     version: &str,
 ) -> Result<HashMap<String, FileMapEntry>, JsValue> {
+    let bytes = match registry {
+        COMPOSER => fetch_composer_archive(pkg, version).await?,
+        _ => fetch_registry_archive(registry, pkg, version).await?,
+    };
+    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+}
+
+async fn fetch_registry_archive(
+    registry: &str,
+    pkg: &str,
+    version: &str,
+) -> Result<Vec<u8>, JsValue> {
     let archive_url = match archive_source(registry, pkg, version).map_err(js_error)? {
         ArchiveSource::Archive { url } => url,
         ArchiveSource::Listing { url } => {
@@ -103,8 +120,29 @@ pub async fn fetch_and_extract_package(
             choose_archive_url(registry, version, listing)?
         }
     };
-    let bytes = fetch_bytes(&archive_url).await?;
-    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+    fetch_bytes(&archive_url).await
+}
+
+type ListingRequest = Result<Rc<Vec<u8>>, JsValue>;
+
+thread_local! {
+    static LISTINGS: Rc<InFlight<ListingRequest>> = InFlight::new();
+}
+
+async fn fetch_shared_listing(url: String) -> ListingRequest {
+    let listings = LISTINGS.with(Rc::clone);
+    let key = url.clone();
+    let request =
+        listings.join_or_start(&key, || async move { fetch_bytes(&url).await.map(Rc::new) });
+    request.await
+}
+
+async fn fetch_composer_archive(pkg: &str, version: &str) -> Result<Vec<u8>, JsValue> {
+    let proxy = proxy::required()?;
+    let listing = fetch_shared_listing(proxy.listing_url(pkg).map_err(js_error)?).await?;
+    let listing = listing_text(COMPOSER, &listing).map_err(js_error)?;
+    let dist = composer::find_dist(version, listing)?;
+    fetch_bytes(&proxy.archive_url(pkg, &dist.listed_url).map_err(js_error)?).await
 }
 
 fn listing_text<'a>(registry: &str, listing: &'a [u8]) -> Result<&'a str, String> {
@@ -209,8 +247,16 @@ fn is_proxy_answer(response: &Response) -> bool {
 async fn fetch_response(url: &str) -> Result<Response, JsValue> {
     let answer = JsFuture::from(fetch_with_str(url)?)
         .await
-        .map_err(|_| FetchFailure::unanswered(url))?;
+        .map_err(|_| unanswered(url))?;
     answer.dyn_into()
+}
+
+fn unanswered(url: &str) -> FetchFailure {
+    if proxy::serves(url) {
+        FetchFailure::unanswered_by_the_proxy(url)
+    } else {
+        FetchFailure::unanswered(url)
+    }
 }
 
 async fn read_body(url: &str, response: &Response) -> Result<Vec<u8>, FetchFailure> {

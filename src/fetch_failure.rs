@@ -28,6 +28,9 @@ pub enum FetchFailure {
     WithoutFetch {
         url: String,
     },
+    UnansweredByTheProxy {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -69,6 +72,12 @@ impl FetchFailure {
         }
     }
 
+    pub fn unanswered_by_the_proxy(url: &str) -> Self {
+        FetchFailure::UnansweredByTheProxy {
+            url: url.to_owned(),
+        }
+    }
+
     pub fn unanswered(url: &str) -> Self {
         FetchFailure::Unanswered {
             url: url.to_owned(),
@@ -89,6 +98,7 @@ impl FetchFailure {
             FetchFailure::BrokenOff { .. }
             | FetchFailure::Unanswered { .. }
             | FetchFailure::WithoutFetch { .. } => FailureCode::Network.as_str(),
+            FetchFailure::UnansweredByTheProxy { .. } => FailureCode::ProxyUnreachable.as_str(),
         }
     }
 
@@ -98,7 +108,9 @@ impl FetchFailure {
             | FetchFailure::AnsweredByProxy { status, .. }
             | FetchFailure::UnreadableProxyAnswer { status, .. }
             | FetchFailure::BrokenOff { status, .. } => Some(*status),
-            FetchFailure::Unanswered { .. } | FetchFailure::WithoutFetch { .. } => None,
+            FetchFailure::Unanswered { .. }
+            | FetchFailure::WithoutFetch { .. }
+            | FetchFailure::UnansweredByTheProxy { .. } => None,
         }
     }
 
@@ -128,6 +140,9 @@ impl FetchFailure {
                 format!("Couldn't download {url} (cut off after HTTP {status})")
             }
             FetchFailure::Unanswered { url } => format!("Couldn't download {url} (no answer)"),
+            FetchFailure::UnansweredByTheProxy { url } => {
+                format!("Couldn't download {url} (diffpack's proxy did not answer)")
+            }
             FetchFailure::WithoutFetch { url } => {
                 format!("Couldn't download {url} (this global scope has no fetch)")
             }
@@ -332,6 +347,18 @@ mod tests {
         assert_eq!(
             failure.message(),
             format!("Couldn't download {URL} (this global scope has no fetch)")
+        );
+    }
+
+    #[test]
+    fn a_proxy_download_that_got_no_answer_is_proxy_unreachable() {
+        let url = "https://proxy.test/v1/composer/p2/monolog/monolog.json";
+        let failure = FetchFailure::unanswered_by_the_proxy(url);
+        assert_eq!(failure.code(), FailureCode::ProxyUnreachable.as_str());
+        assert_eq!(failure.status(), None);
+        assert_eq!(
+            failure.message(),
+            format!("Couldn't download {url} (diffpack's proxy did not answer)")
         );
     }
 }
