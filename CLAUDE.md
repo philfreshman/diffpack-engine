@@ -9,7 +9,7 @@ cargo test                                   # host-side suite, fast and offline
 cargo test <name>                            # tests whose name contains <name>
 cargo test --test public_api                 # the Rust surface as diffpack-server sees it
 wasm-pack test --headless --chrome           # the wasm bindings in a real browser, against crates.io
-DIFFPACK_PROXY_ORIGIN=https://diffpack-proxy.philipswiezak.workers.dev wasm-pack test --headless --chrome --test web_live_proxy   # one real Composer comparison through the proxy
+DIFFPACK_PROXY_ORIGIN=https://diffpack-proxy.philipswiezak.workers.dev wasm-pack test --headless --chrome --test web_live_proxy -- --include-ignored   # one real Composer comparison through the proxy; --ignored does not run it in the browser
 wasm-pack build --release --target web --scope philfreshman   # writes pkg/ (gitignored, never commit it)
 .githooks/pre-commit                         # fmt, clippy -D warnings, cargo deny, cargo audit: what CI runs
 cargo run --release --example bench -- <from-archive> <to-archive> [--registry NAME]

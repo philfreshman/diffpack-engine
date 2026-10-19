@@ -18,11 +18,10 @@ fn has_a_change(entry: &DiffEntry) -> bool {
 }
 
 #[wasm_bindgen_test]
-async fn monolog_3_12_0_to_3_12_1_diffs_through_the_live_proxy_when_one_is_given() {
-    let Some(origin) = LIVE_PROXY_ORIGIN else {
-        console_log!("DIFFPACK_PROXY_ORIGIN is not set; skipping the live proxy comparison");
-        return;
-    };
+#[ignore = "needs a live proxy: set DIFFPACK_PROXY_ORIGIN and run with -- --include-ignored"]
+async fn monolog_3_12_0_to_3_12_1_diffs_through_the_live_proxy() {
+    let origin =
+        LIVE_PROXY_ORIGIN.expect("set DIFFPACK_PROXY_ORIGIN to the proxy to compare through");
     set_proxy_origin(origin.to_string()).expect("DIFFPACK_PROXY_ORIGIN is a valid origin");
 
     let tree = build_diff_tree_for_package(
