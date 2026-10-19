@@ -136,7 +136,14 @@ fn host_of(url: &str) -> &str {
         .next()
         .unwrap_or(after_scheme);
     let without_user = authority.rsplit('@').next().unwrap_or(authority);
-    without_user.split(':').next().unwrap_or(without_user)
+    without_port(without_user)
+}
+
+fn without_port(host_and_port: &str) -> &str {
+    match host_and_port.find(']') {
+        Some(end) if host_and_port.starts_with('[') => &host_and_port[..=end],
+        _ => host_and_port.split(':').next().unwrap_or(host_and_port),
+    }
 }
 
 #[cfg(test)]
@@ -308,5 +315,19 @@ mod tests {
             rejection(&url).message,
             format!("diffpack can't download archives from gitlab.example.com yet: {url}")
         );
+    }
+
+    #[test]
+    fn a_bracketed_ipv6_host_is_named_whole() {
+        for url in [
+            format!("https://[2001:db8::1]/repos/o/r/zipball/{SHA}"),
+            format!("https://[2001:db8::1]:8443/repos/o/r/zipball/{SHA}"),
+            format!("https://user@[2001:db8::1]:8443/repos/o/r/zipball/{SHA}"),
+        ] {
+            assert_eq!(
+                rejection(&url).message,
+                format!("diffpack can't download archives from [2001:db8::1] yet: {url}")
+            );
+        }
     }
 }
