@@ -31,6 +31,14 @@ pub struct ProxyError {
     resets_at: Option<String>,
 }
 
+impl ProxyError {
+    fn read(body: &[u8]) -> Option<Self> {
+        serde_json::from_slice(body)
+            .ok()
+            .filter(|error: &ProxyError| !error.code.trim().is_empty())
+    }
+}
+
 const NOT_FOUND: u16 = 404;
 const TOO_MANY_REQUESTS: u16 = 429;
 const UPSTREAM_FAILED: &str = "upstream_failed";
@@ -41,9 +49,9 @@ impl FetchFailure {
         let Some(body) = proxy_error_body else {
             return FetchFailure::Answered { url, status };
         };
-        match serde_json::from_slice(body) {
-            Ok(error) => FetchFailure::AnsweredByProxy { url, status, error },
-            Err(_) => FetchFailure::UnreadableProxyAnswer { url, status },
+        match ProxyError::read(body) {
+            Some(error) => FetchFailure::AnsweredByProxy { url, status, error },
+            None => FetchFailure::UnreadableProxyAnswer { url, status },
         }
     }
 
@@ -218,6 +226,8 @@ mod tests {
             r#"{"message": "no code"}"#,
             r#"{"error": 7, "message": "a code that is not text"}"#,
             r#"{"error": "quota_exhausted", "message": "cut off"#,
+            r#"{"error": "", "message": "an empty code"}"#,
+            r#"{"error": "   "}"#,
             "",
         ];
         for body in broken_bodies {
