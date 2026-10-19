@@ -1,23 +1,22 @@
+use crate::in_flight::InFlight;
 use crate::types::FileMapEntry;
-use futures::future::{FutureExt, LocalBoxFuture, Shared};
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
 use std::rc::Rc;
 
 pub type PackageFiles = Rc<HashMap<String, FileMapEntry>>;
-type SharedFetch<E> = Shared<LocalBoxFuture<'static, Result<PackageFiles, E>>>;
 
-pub struct PackageStore<E> {
+pub struct PackageStore<E: Clone> {
     extracted: RefCell<HashMap<String, PackageFiles>>,
-    in_flight: RefCell<HashMap<String, SharedFetch<E>>>,
+    in_flight: Rc<InFlight<Result<PackageFiles, E>>>,
 }
 
 impl<E: Clone + 'static> PackageStore<E> {
     pub fn new() -> Rc<Self> {
         Rc::new(PackageStore {
             extracted: RefCell::new(HashMap::new()),
-            in_flight: RefCell::new(HashMap::new()),
+            in_flight: InFlight::new(),
         })
     }
 
@@ -32,40 +31,21 @@ impl<E: Clone + 'static> PackageStore<E> {
         if let Some(files) = self.extracted_package(&key) {
             return Ok(files);
         }
-        self.join_or_start_fetch(key, fetch).await
+        let store = Rc::clone(self);
+        let extracted_key = key.clone();
+        let request = self.in_flight.join_or_start(&key, || async move {
+            let result = fetch.await.map(Rc::new);
+            store.keep_extracted(extracted_key, &result);
+            result
+        });
+        request.await
     }
 
     fn extracted_package(&self, key: &str) -> Option<PackageFiles> {
         self.extracted.borrow().get(key).cloned()
     }
 
-    fn join_or_start_fetch<F>(self: &Rc<Self>, key: String, fetch: F) -> SharedFetch<E>
-    where
-        F: Future<Output = Result<HashMap<String, FileMapEntry>, E>> + 'static,
-    {
-        self.in_flight
-            .borrow_mut()
-            .entry(key.clone())
-            .or_insert_with(|| {
-                Rc::clone(self)
-                    .fetch_and_settle(key, fetch)
-                    .boxed_local()
-                    .shared()
-            })
-            .clone()
-    }
-
-    async fn fetch_and_settle<F>(self: Rc<Self>, key: String, fetch: F) -> Result<PackageFiles, E>
-    where
-        F: Future<Output = Result<HashMap<String, FileMapEntry>, E>>,
-    {
-        let result = fetch.await.map(Rc::new);
-        self.settle(key, &result);
-        result
-    }
-
-    fn settle(&self, key: String, result: &Result<PackageFiles, E>) {
-        self.in_flight.borrow_mut().remove(&key);
+    fn keep_extracted(&self, key: String, result: &Result<PackageFiles, E>) {
         if let Ok(files) = result {
             self.extracted.borrow_mut().insert(key, Rc::clone(files));
         }
@@ -78,6 +58,7 @@ mod tests {
     use crate::types::FileType;
     use futures::channel::oneshot;
     use futures::executor::block_on;
+    use futures::FutureExt;
     use std::cell::Cell;
 
     const KEY: &str = "crates:itoa:1.0.18";
@@ -228,7 +209,7 @@ mod tests {
         ))
         .unwrap();
 
-        assert!(store.in_flight.borrow().is_empty());
+        assert!(store.in_flight.is_empty());
     }
 
     #[test]
@@ -263,7 +244,7 @@ mod tests {
         ));
         assert_eq!(failure.unwrap_err(), "network down");
         assert!(!store.extracted().contains_key(KEY));
-        assert!(store.in_flight.borrow().is_empty());
+        assert!(store.in_flight.is_empty());
 
         let retry = block_on(store.get_or_fetch(
             KEY.to_string(),

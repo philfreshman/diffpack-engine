@@ -35,6 +35,11 @@ impl<T: Clone + 'static> InFlight<T> {
         request
     }
 
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.pending.borrow().is_empty()
+    }
+
     fn settle_when_done<F>(self: Rc<Self>, key: String, request: F) -> SharedRequest<T>
     where
         F: Future<Output = T> + 'static,
