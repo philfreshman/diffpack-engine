@@ -11,6 +11,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Response, Window, WorkerGlobalScope};
 use zip::ZipArchive;
 
+use crate::composer;
 use crate::fetch_failure::FetchFailure;
 use crate::types::{FileMapEntry, FileType};
 
@@ -42,6 +43,7 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
         "pypi" => Ok(ArchiveSource::Listing {
             url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
         }),
+        "composer" => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -853,6 +855,73 @@ mod tests {
                 assert!(url.ends_with("/requests/2.32.3/json"), "{url}");
             }
             other => panic!("expected a listing, got {other:?}"),
+        }
+    }
+
+    fn listing(url: &str) -> ArchiveSource {
+        ArchiveSource::Listing {
+            url: url.to_string(),
+        }
+    }
+
+    #[test]
+    fn composer_is_found_through_the_packagist_listing_of_the_whole_package() {
+        assert_eq!(
+            archive_source("composer", "monolog/monolog", "3.12.1").unwrap(),
+            listing("https://repo.packagist.org/p2/monolog/monolog.json")
+        );
+        assert_eq!(
+            archive_source("composer", "symfony/password-hasher", "v8.0.0").unwrap(),
+            listing("https://repo.packagist.org/p2/symfony/password-hasher.json")
+        );
+    }
+
+    #[test]
+    fn a_composer_name_is_looked_up_in_lowercase() {
+        assert_eq!(
+            archive_source("composer", "Monolog/Monolog", "3.12.1").unwrap(),
+            listing("https://repo.packagist.org/p2/monolog/monolog.json")
+        );
+    }
+
+    #[test]
+    fn every_name_composer_allows_has_a_listing() {
+        for name in [
+            "a/b",
+            "vendor0/package9",
+            "my_vendor/my_package",
+            "my.vendor/my.package",
+            "my-vendor/my-package",
+            "vendor/double--dash",
+            "v-e_n.d/p_a.c-k--g",
+        ] {
+            assert!(archive_source("composer", name, "1.0.0").is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_composer_rejects_has_no_listing() {
+        for name in [
+            "",
+            "monolog",
+            "/monolog",
+            "monolog/",
+            "a/b/c",
+            "-vendor/package",
+            "vendor-/package",
+            "vendor/_package",
+            "vendor/package.",
+            "ven--dor/package",
+            "vendor/pack---age",
+            "vendor/pack_-age",
+            "vendor/pack..age",
+            "ven dor/package",
+            "vendor/pack%2fage",
+            "../../evil/package",
+            "vendor/package?x=1",
+        ] {
+            let err = archive_source("composer", name, "1.0.0").unwrap_err();
+            assert_eq!(err, format!("Invalid Composer package name: {name}"));
         }
     }
 

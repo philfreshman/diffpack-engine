@@ -1,3 +1,4 @@
+mod composer;
 mod core;
 mod failure;
 mod fetch_failure;
