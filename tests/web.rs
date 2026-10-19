@@ -2,6 +2,7 @@ use diffpack_engine::{
     build_diff_tree_for_package, get_diff_for_comparison, get_diff_for_path, prefetch_package,
 };
 use serde::Deserialize;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -166,4 +167,86 @@ async fn concurrent_builds_and_a_prefetch_of_a_shared_version_download_it_once()
         downloads_of("https://static.crates.io/crates/itoa/itoa-1.0.10.crate"),
         1
     );
+}
+
+#[wasm_bindgen(inline_js = r#"
+let realFetch;
+
+function replaceFetch(stub) {
+    realFetch ??= globalThis.fetch;
+    globalThis.fetch = stub;
+}
+
+export function answer_every_fetch_with(status) {
+    replaceFetch(async () => new Response("", { status }));
+}
+
+export function reject_every_fetch() {
+    replaceFetch(async () => {
+        throw new TypeError("Failed to fetch");
+    });
+}
+
+export function restore_fetch() {
+    globalThis.fetch = realFetch;
+}
+"#)]
+extern "C" {
+    fn answer_every_fetch_with(status: u16);
+    fn reject_every_fetch();
+    fn restore_fetch();
+}
+
+const UNPUBLISHED_ITOA_DOWNLOAD: &str =
+    "https://static.crates.io/crates/itoa/itoa-0.0.0-stub.crate";
+
+async fn rejection_of_a_stubbed_download() -> JsValue {
+    let result = prefetch_package(
+        "crates".to_string(),
+        "itoa".to_string(),
+        "0.0.0-stub".to_string(),
+    )
+    .await;
+    restore_fetch();
+    result.expect_err("a stubbed failure must reject")
+}
+
+fn property(error: &JsValue, name: &str) -> JsValue {
+    js_sys::Reflect::get(error, &JsValue::from_str(name)).expect("an Error has readable properties")
+}
+
+fn text_property(error: &JsValue, name: &str) -> Option<String> {
+    property(error, name).as_string()
+}
+
+fn number_property(error: &JsValue, name: &str) -> Option<f64> {
+    property(error, name).as_f64()
+}
+
+#[wasm_bindgen_test]
+async fn a_download_answered_with_404_rejects_with_not_found_and_its_status() {
+    answer_every_fetch_with(404);
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("not_found"));
+    assert_eq!(number_property(&error, "status"), Some(404.0));
+    assert_eq!(
+        text_property(&error, "message"),
+        Some(format!(
+            "Couldn't download {UNPUBLISHED_ITOA_DOWNLOAD} (HTTP 404)"
+        ))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_download_that_never_got_an_answer_rejects_as_a_network_failure() {
+    reject_every_fetch();
+
+    let error = rejection_of_a_stubbed_download().await;
+
+    assert!(error.is_instance_of::<js_sys::Error>(), "{error:?}");
+    assert_eq!(text_property(&error, "code").as_deref(), Some("network"));
+    assert!(property(&error, "status").is_undefined());
 }

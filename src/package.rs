@@ -11,6 +11,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Response, Window, WorkerGlobalScope};
 use zip::ZipArchive;
 
+use crate::fetch_failure::FetchFailure;
 use crate::types::{FileMapEntry, FileType};
 
 #[derive(Deserialize)]
@@ -170,16 +171,22 @@ pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<Str
 }
 
 async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
-    let fetch_promise = fetch_with_str(url)?;
-    let resp_value = JsFuture::from(fetch_promise).await?;
-    let resp: Response = resp_value.dyn_into()?;
-    if !resp.ok() {
-        return Err(JsValue::from_str(&format!(
-            "Failed to fetch tarball from {url}"
-        )));
+    let response = fetch_response(url).await?;
+    if !response.ok() {
+        return Err(FetchFailure::answered(url, response.status()).into());
     }
+    read_body(&response).await
+}
 
-    let buffer = JsFuture::from(resp.array_buffer()?).await?;
+async fn fetch_response(url: &str) -> Result<Response, JsValue> {
+    let answer = JsFuture::from(fetch_with_str(url)?)
+        .await
+        .map_err(|_| FetchFailure::unanswered(url))?;
+    answer.dyn_into()
+}
+
+async fn read_body(response: &Response) -> Result<Vec<u8>, JsValue> {
+    let buffer = JsFuture::from(response.array_buffer()?).await?;
     let array = Uint8Array::new(&buffer);
     let mut bytes = vec![0; array.length() as usize];
     array.copy_to(&mut bytes);
