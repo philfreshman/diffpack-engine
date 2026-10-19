@@ -25,6 +25,9 @@ pub enum FetchFailure {
     Unanswered {
         url: String,
     },
+    WithoutFetch {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -72,14 +75,20 @@ impl FetchFailure {
         }
     }
 
+    pub fn without_fetch(url: &str) -> Self {
+        FetchFailure::WithoutFetch {
+            url: url.to_owned(),
+        }
+    }
+
     pub fn code(&self) -> &str {
         match self {
             FetchFailure::Answered { status, .. } => code_for_status(*status).as_str(),
             FetchFailure::AnsweredByProxy { error, .. } => &error.code,
             FetchFailure::UnreadableProxyAnswer { .. } => FailureCode::UpstreamFailed.as_str(),
-            FetchFailure::BrokenOff { .. } | FetchFailure::Unanswered { .. } => {
-                FailureCode::Network.as_str()
-            }
+            FetchFailure::BrokenOff { .. }
+            | FetchFailure::Unanswered { .. }
+            | FetchFailure::WithoutFetch { .. } => FailureCode::Network.as_str(),
         }
     }
 
@@ -89,7 +98,7 @@ impl FetchFailure {
             | FetchFailure::AnsweredByProxy { status, .. }
             | FetchFailure::UnreadableProxyAnswer { status, .. }
             | FetchFailure::BrokenOff { status, .. } => Some(*status),
-            FetchFailure::Unanswered { .. } => None,
+            FetchFailure::Unanswered { .. } | FetchFailure::WithoutFetch { .. } => None,
         }
     }
 
@@ -119,6 +128,9 @@ impl FetchFailure {
                 format!("Couldn't download {url} (cut off after HTTP {status})")
             }
             FetchFailure::Unanswered { url } => format!("Couldn't download {url} (no answer)"),
+            FetchFailure::WithoutFetch { url } => {
+                format!("Couldn't download {url} (this global scope has no fetch)")
+            }
         }
     }
 }
@@ -309,6 +321,17 @@ mod tests {
         assert_eq!(
             failure.message(),
             format!("Couldn't download {URL} (cut off after HTTP 200)")
+        );
+    }
+
+    #[test]
+    fn a_download_where_the_global_scope_has_no_fetch_is_a_network_failure() {
+        let failure = FetchFailure::without_fetch(URL);
+        assert_eq!(failure.code(), FailureCode::Network.as_str());
+        assert_eq!(failure.status(), None);
+        assert_eq!(
+            failure.message(),
+            format!("Couldn't download {URL} (this global scope has no fetch)")
         );
     }
 }

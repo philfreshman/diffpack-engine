@@ -213,14 +213,14 @@ async fn read_body(url: &str, response: &Response) -> Result<Vec<u8>, FetchFailu
     Ok(bytes)
 }
 
-fn fetch_with_str(url: &str) -> Result<js_sys::Promise, JsValue> {
+fn fetch_with_str(url: &str) -> Result<js_sys::Promise, FetchFailure> {
     let global = js_sys::global();
     if let Some(window) = global.dyn_ref::<Window>() {
         Ok(window.fetch_with_str(url))
     } else if let Some(worker) = global.dyn_ref::<WorkerGlobalScope>() {
         Ok(worker.fetch_with_str(url))
     } else {
-        Err(JsValue::from_str("Global scope does not support fetch"))
+        Err(FetchFailure::without_fetch(url))
     }
 }
 
