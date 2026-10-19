@@ -231,8 +231,16 @@ fn is_proxy_answer(response: &Response) -> bool {
 async fn fetch_response(url: &str) -> Result<Response, JsValue> {
     let answer = JsFuture::from(fetch_with_str(url)?)
         .await
-        .map_err(|_| FetchFailure::unanswered(url))?;
+        .map_err(|_| unanswered(url))?;
     answer.dyn_into()
+}
+
+fn unanswered(url: &str) -> FetchFailure {
+    if proxy::serves(url) {
+        FetchFailure::unanswered_by_the_proxy(url)
+    } else {
+        FetchFailure::unanswered(url)
+    }
 }
 
 async fn read_body(url: &str, response: &Response) -> Result<Vec<u8>, FetchFailure> {

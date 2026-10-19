@@ -25,6 +25,10 @@ pub fn configured() -> Option<ProxyOrigin> {
     CONFIGURED.with(|configured| configured.borrow().clone())
 }
 
+pub fn serves(url: &str) -> bool {
+    configured().is_some_and(|origin| origin.serves(url))
+}
+
 pub fn required() -> Result<ProxyOrigin, CodedFailure> {
     configured().ok_or_else(|| {
         CodedFailure::new(
@@ -44,6 +48,11 @@ impl ProxyOrigin {
                 "Invalid proxy origin: {origin:?}. Use https://<host>, or http://localhost:<port> or http://127.0.0.1:<port> for development."
             ))
         }
+    }
+
+    fn serves(&self, url: &str) -> bool {
+        url.strip_prefix(&self.0)
+            .is_some_and(|rest| rest.starts_with('/'))
     }
 
     pub fn listing_url(&self, name: &str) -> Result<String, String> {
@@ -246,5 +255,22 @@ mod tests {
         );
         configure("https://proxy.test").unwrap();
         assert_eq!(required(), Ok(test_proxy()));
+    }
+
+    #[test]
+    fn only_urls_under_the_configured_origin_are_served_by_the_proxy() {
+        assert!(!serves("https://proxy.test/v1/composer/p2/o/r.json"));
+        configure("https://proxy.test").unwrap();
+        assert!(serves("https://proxy.test/v1/composer/p2/o/r.json"));
+        assert!(serves(
+            "https://proxy.test/v1/composer/archive?package=o/r&url=x"
+        ));
+        assert!(!serves(
+            "https://proxy.test.evil.example/v1/composer/p2/o/r.json"
+        ));
+        assert!(!serves("https://proxy.testing/v1"));
+        assert!(!serves(
+            "https://static.crates.io/crates/itoa/itoa-1.0.0.crate"
+        ));
     }
 }

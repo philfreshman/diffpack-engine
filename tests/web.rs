@@ -533,3 +533,63 @@ async fn a_composer_build_downloads_its_listing_and_archives_through_the_proxy()
         ]
     );
 }
+
+#[wasm_bindgen_test]
+async fn a_rejected_fetch_is_proxy_unreachable_on_the_proxy_and_network_elsewhere() {
+    use_the_test_proxy();
+    reject_every_fetch();
+    let through_the_proxy = prefetch_package(
+        "composer".to_string(),
+        "stub/routed".to_string(),
+        "1.0.0".to_string(),
+    )
+    .await
+    .expect_err("every fetch is rejected");
+    let elsewhere = prefetch_package(
+        "crates".to_string(),
+        "itoa".to_string(),
+        "0.0.0-stub".to_string(),
+    )
+    .await
+    .expect_err("every fetch is rejected");
+    restore_fetch();
+
+    assert_eq!(
+        text_property(&through_the_proxy, "code").as_deref(),
+        Some("proxy_unreachable")
+    );
+    assert_eq!(
+        text_property(&elsewhere, "code").as_deref(),
+        Some("network")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_proxy_quota_answer_on_a_composer_listing_arrives_with_its_reset_time() {
+    use_the_test_proxy();
+    route_fetch(
+        "/v1/composer/p2/",
+        503,
+        QUOTA_EXHAUSTED_BODY.as_bytes(),
+        Some("quota_exhausted".to_string()),
+    );
+
+    let error = prefetch_package(
+        "composer".to_string(),
+        "stub/routed".to_string(),
+        "1.0.0".to_string(),
+    )
+    .await
+    .expect_err("the proxy refused");
+    restore_fetch();
+
+    assert_eq!(
+        text_property(&error, "code").as_deref(),
+        Some("quota_exhausted")
+    );
+    assert_eq!(number_property(&error, "status"), Some(503.0));
+    assert_eq!(
+        text_property(&error, "resetsAt").as_deref(),
+        Some("2026-10-20T00:00:00Z")
+    );
+}
