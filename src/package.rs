@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Cursor, Read};
+use std::rc::Rc;
 
 use flate2::read::GzDecoder;
 use js_sys::Uint8Array;
@@ -11,7 +12,14 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{Response, Window, WorkerGlobalScope};
 use zip::ZipArchive;
 
+use crate::composer;
+use crate::failure::Failure;
+use crate::fetch_failure::FetchFailure;
+use crate::in_flight::InFlight;
+use crate::proxy;
 use crate::types::{FileMapEntry, FileType};
+
+const COMPOSER: &str = "composer";
 
 #[derive(Deserialize)]
 pub struct PyPiResponse {
@@ -41,22 +49,30 @@ pub fn archive_source(registry: &str, pkg: &str, version: &str) -> Result<Archiv
         "pypi" => Ok(ArchiveSource::Listing {
             url: format!("https://pypi.org/pypi/{pkg}/{version}/json"),
         }),
+        COMPOSER => composer::listing_url(pkg).map(|url| ArchiveSource::Listing { url }),
         _ => Err(unsupported_registry(registry)),
     }
 }
 
-pub fn choose_archive(registry: &str, listing: &str) -> Result<String, String> {
+pub fn choose_archive(registry: &str, version: &str, listing: &str) -> Result<String, String> {
+    choose_archive_url(registry, version, listing).map_err(Failure::into_message)
+}
+
+fn choose_archive_url(registry: &str, version: &str, listing: &str) -> Result<String, Failure> {
     match registry {
-        "pypi" => {
-            let metadata: PyPiResponse = serde_json::from_str(listing)
-                .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
-            select_pypi_sdist_url(&metadata.urls)
-        }
-        "npm" | "crates" | "go" => Err(format!(
+        COMPOSER => composer::find_dist(version, listing).map(|dist| dist.direct_url),
+        "pypi" => choose_pypi_archive(listing).map_err(Failure::Uncoded),
+        "npm" | "crates" | "go" => Err(Failure::Uncoded(format!(
             "Registry {registry} serves its archive directly; there is no listing to choose from"
-        )),
-        _ => Err(unsupported_registry(registry)),
+        ))),
+        _ => Err(Failure::Uncoded(unsupported_registry(registry))),
     }
+}
+
+fn choose_pypi_archive(listing: &str) -> Result<String, String> {
+    let metadata: PyPiResponse = serde_json::from_str(listing)
+        .map_err(|err| format!("Failed to parse PyPI metadata: {err}"))?;
+    select_pypi_sdist_url(&metadata.urls)
 }
 
 pub fn unpack_archive(
@@ -70,7 +86,7 @@ pub fn unpack_archive(
             let files = extract_archive_bytes_with(bytes, false)?;
             Ok(strip_go_module_root(files, pkg, version))
         }
-        "npm" | "crates" | "pypi" => extract_archive_bytes(bytes),
+        "npm" | "crates" | "pypi" | COMPOSER => extract_archive_bytes(bytes),
         _ => Err(unsupported_registry(registry)),
     }
 }
@@ -84,18 +100,54 @@ pub async fn fetch_and_extract_package(
     pkg: &str,
     version: &str,
 ) -> Result<HashMap<String, FileMapEntry>, JsValue> {
+    let bytes = match registry {
+        COMPOSER => fetch_composer_archive(pkg, version).await?,
+        _ => fetch_registry_archive(registry, pkg, version).await?,
+    };
+    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+}
+
+async fn fetch_registry_archive(
+    registry: &str,
+    pkg: &str,
+    version: &str,
+) -> Result<Vec<u8>, JsValue> {
     let archive_url = match archive_source(registry, pkg, version).map_err(js_error)? {
         ArchiveSource::Archive { url } => url,
         ArchiveSource::Listing { url } => {
             let listing = fetch_bytes(&url).await?;
-            let listing = std::str::from_utf8(&listing).map_err(|err| {
-                JsValue::from_str(&format!("Failed to parse PyPI metadata: {err}"))
-            })?;
-            choose_archive(registry, listing).map_err(js_error)?
+            let listing = listing_text(registry, &listing).map_err(js_error)?;
+            choose_archive_url(registry, version, listing)?
         }
     };
-    let bytes = fetch_bytes(&archive_url).await?;
-    unpack_archive(registry, pkg, version, &bytes).map_err(js_error)
+    fetch_bytes(&archive_url).await
+}
+
+type ListingRequest = Result<Rc<Vec<u8>>, JsValue>;
+
+thread_local! {
+    static LISTINGS: Rc<InFlight<ListingRequest>> = InFlight::new();
+}
+
+async fn fetch_shared_listing(url: String) -> ListingRequest {
+    let listings = LISTINGS.with(Rc::clone);
+    let key = url.clone();
+    let request =
+        listings.join_or_start(&key, || async move { fetch_bytes(&url).await.map(Rc::new) });
+    request.await
+}
+
+async fn fetch_composer_archive(pkg: &str, version: &str) -> Result<Vec<u8>, JsValue> {
+    let proxy = proxy::required()?;
+    let listing = fetch_shared_listing(proxy.listing_url(pkg).map_err(js_error)?).await?;
+    let listing = listing_text(COMPOSER, &listing).map_err(js_error)?;
+    let dist = composer::find_dist(version, listing)?;
+    fetch_bytes(&proxy.archive_url(pkg, &dist.listed_url).map_err(js_error)?).await
+}
+
+fn listing_text<'a>(registry: &str, listing: &'a [u8]) -> Result<&'a str, String> {
+    std::str::from_utf8(listing)
+        .map_err(|err| format!("The {registry} listing is not valid UTF-8: {err}"))
 }
 
 fn js_error(err: String) -> JsValue {
@@ -170,30 +222,61 @@ pub fn build_tarball_url(registry: &str, pkg: &str, version: &str) -> Result<Str
 }
 
 async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
-    let fetch_promise = fetch_with_str(url)?;
-    let resp_value = JsFuture::from(fetch_promise).await?;
-    let resp: Response = resp_value.dyn_into()?;
-    if !resp.ok() {
-        return Err(JsValue::from_str(&format!(
-            "Failed to fetch tarball from {url}"
-        )));
+    let response = fetch_response(url).await?;
+    if !response.ok() {
+        return Err(failed_answer(url, &response).await.into());
     }
+    Ok(read_body(url, &response).await?)
+}
 
-    let buffer = JsFuture::from(resp.array_buffer()?).await?;
+const PROXY_ERROR_HEADER: &str = "Diffpack-Proxy-Error";
+
+async fn failed_answer(url: &str, response: &Response) -> FetchFailure {
+    let proxy_error_body = if is_proxy_answer(response) {
+        Some(read_body(url, response).await.unwrap_or_default())
+    } else {
+        None
+    };
+    FetchFailure::from_answer(url, response.status(), proxy_error_body.as_deref())
+}
+
+fn is_proxy_answer(response: &Response) -> bool {
+    response.headers().has(PROXY_ERROR_HEADER).unwrap_or(false)
+}
+
+async fn fetch_response(url: &str) -> Result<Response, JsValue> {
+    let answer = JsFuture::from(fetch_with_str(url)?)
+        .await
+        .map_err(|_| unanswered(url))?;
+    answer.dyn_into()
+}
+
+fn unanswered(url: &str) -> FetchFailure {
+    if proxy::serves(url) {
+        FetchFailure::unanswered_by_the_proxy(url)
+    } else {
+        FetchFailure::unanswered(url)
+    }
+}
+
+async fn read_body(url: &str, response: &Response) -> Result<Vec<u8>, FetchFailure> {
+    let broken_off = |_| FetchFailure::broken_off(url, response.status());
+    let body = response.array_buffer().map_err(broken_off)?;
+    let buffer = JsFuture::from(body).await.map_err(broken_off)?;
     let array = Uint8Array::new(&buffer);
     let mut bytes = vec![0; array.length() as usize];
     array.copy_to(&mut bytes);
     Ok(bytes)
 }
 
-fn fetch_with_str(url: &str) -> Result<js_sys::Promise, JsValue> {
+fn fetch_with_str(url: &str) -> Result<js_sys::Promise, FetchFailure> {
     let global = js_sys::global();
     if let Some(window) = global.dyn_ref::<Window>() {
         Ok(window.fetch_with_str(url))
     } else if let Some(worker) = global.dyn_ref::<WorkerGlobalScope>() {
         Ok(worker.fetch_with_str(url))
     } else {
-        Err(JsValue::from_str("Global scope does not support fetch"))
+        Err(FetchFailure::without_fetch(url))
     }
 }
 
@@ -829,6 +912,73 @@ mod tests {
         }
     }
 
+    fn listing(url: &str) -> ArchiveSource {
+        ArchiveSource::Listing {
+            url: url.to_string(),
+        }
+    }
+
+    #[test]
+    fn composer_is_found_through_the_packagist_listing_of_the_whole_package() {
+        assert_eq!(
+            archive_source("composer", "monolog/monolog", "3.12.1").unwrap(),
+            listing("https://repo.packagist.org/p2/monolog/monolog.json")
+        );
+        assert_eq!(
+            archive_source("composer", "symfony/password-hasher", "v8.0.0").unwrap(),
+            listing("https://repo.packagist.org/p2/symfony/password-hasher.json")
+        );
+    }
+
+    #[test]
+    fn a_composer_name_is_looked_up_in_lowercase() {
+        assert_eq!(
+            archive_source("composer", "Monolog/Monolog", "3.12.1").unwrap(),
+            listing("https://repo.packagist.org/p2/monolog/monolog.json")
+        );
+    }
+
+    #[test]
+    fn every_name_composer_allows_has_a_listing() {
+        for name in [
+            "a/b",
+            "vendor0/package9",
+            "my_vendor/my_package",
+            "my.vendor/my.package",
+            "my-vendor/my-package",
+            "vendor/double--dash",
+            "v-e_n.d/p_a.c-k--g",
+        ] {
+            assert!(archive_source("composer", name, "1.0.0").is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_composer_rejects_has_no_listing() {
+        for name in [
+            "",
+            "monolog",
+            "/monolog",
+            "monolog/",
+            "a/b/c",
+            "-vendor/package",
+            "vendor-/package",
+            "vendor/_package",
+            "vendor/package.",
+            "ven--dor/package",
+            "vendor/pack---age",
+            "vendor/pack_-age",
+            "vendor/pack..age",
+            "ven dor/package",
+            "vendor/pack%2fage",
+            "../../evil/package",
+            "vendor/package?x=1",
+        ] {
+            let err = archive_source("composer", name, "1.0.0").unwrap_err();
+            assert_eq!(err, format!("Invalid Composer package name: {name}"));
+        }
+    }
+
     #[test]
     fn an_unknown_registry_has_no_archive_source() {
         assert_eq!(
@@ -847,30 +997,67 @@ mod tests {
             ]
         }"#;
         assert_eq!(
-            choose_archive("pypi", listing).unwrap(),
+            choose_archive("pypi", "1.0", listing).unwrap(),
             "https://files/x-1.0.tar.gz"
         );
     }
 
     #[test]
     fn a_pypi_listing_that_is_malformed_or_empty_is_an_error() {
-        assert!(choose_archive("pypi", "not json")
+        assert!(choose_archive("pypi", "1.0", "not json")
             .unwrap_err()
             .starts_with("Failed to parse PyPI metadata: "));
         assert_eq!(
-            choose_archive("pypi", r#"{"urls": []}"#).unwrap_err(),
+            choose_archive("pypi", "1.0", r#"{"urls": []}"#).unwrap_err(),
             "No downloadable artifacts found for PyPI package"
+        );
+    }
+
+    #[test]
+    fn a_listing_is_read_as_text() {
+        assert_eq!(
+            listing_text("pypi", br#"{"urls": []}"#),
+            Ok(r#"{"urls": []}"#)
+        );
+    }
+
+    #[test]
+    fn a_listing_that_is_not_text_names_the_registry_it_came_from() {
+        let err = listing_text("composer", b"\xff\xfe").unwrap_err();
+        assert!(
+            err.starts_with("The composer listing is not valid UTF-8: "),
+            "{err}"
+        );
+        assert!(!err.contains("PyPI"), "{err}");
+    }
+
+    #[test]
+    fn a_composer_listing_yields_the_direct_archive_of_the_asked_version() {
+        let listing = r#"{
+            "minified": "composer/2.0",
+            "packages": {"o/r": [
+                {"version": "v2.0.0", "dist": {"url": "https://api.github.com/repos/o/r/zipball/2222222222222222222222222222222222222222"}},
+                {"version": "v1.0.0", "dist": {"url": "https://api.github.com/repos/o/r/zipball/1111111111111111111111111111111111111111"}}
+            ]}
+        }"#;
+        assert_eq!(
+            choose_archive("composer", "1.0.0", listing).unwrap(),
+            "https://codeload.github.com/o/r/legacy.zip/1111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            choose_archive("composer", "3.0.0", listing).unwrap_err(),
+            "Packagist lists no version 3.0.0 of o/r"
         );
     }
 
     #[test]
     fn a_registry_without_a_listing_cannot_choose_from_one() {
         for registry in ["npm", "crates", "go"] {
-            let err = choose_archive(registry, r#"{"urls": []}"#).unwrap_err();
+            let err = choose_archive(registry, "1.0", r#"{"urls": []}"#).unwrap_err();
             assert!(err.contains("no listing"), "{registry}: {err}");
         }
         assert_eq!(
-            choose_archive("maven", "{}").unwrap_err(),
+            choose_archive("maven", "1.0", "{}").unwrap_err(),
             "Unsupported registry: maven"
         );
     }
@@ -919,6 +1106,33 @@ mod tests {
             let files = unpack_archive(registry, "pkg", "1.0.0", &archive).unwrap();
             assert_eq!(sorted_keys(&files), expected, "{registry}");
         }
+    }
+
+    #[test]
+    fn a_composer_zip_unpacks_without_the_folder_its_host_wraps_it_in() {
+        let archive = zip_bytes(&[
+            (
+                "Seldaek-monolog-d7059e4/composer.json".to_string(),
+                b"{}".to_vec(),
+            ),
+            (
+                "Seldaek-monolog-d7059e4/src/Monolog/Logger.php".to_string(),
+                b"<?php\n".to_vec(),
+            ),
+        ]);
+
+        let files = unpack_archive("composer", "monolog/monolog", "3.12.1", &archive).unwrap();
+
+        assert_eq!(
+            sorted_keys(&files),
+            [
+                "composer.json",
+                "src",
+                "src/Monolog",
+                "src/Monolog/Logger.php"
+            ]
+        );
+        assert_eq!(files["src/Monolog/Logger.php"].content, "<?php\n");
     }
 
     #[test]

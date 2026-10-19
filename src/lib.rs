@@ -1,6 +1,12 @@
+mod composer;
 mod core;
+mod failure;
+mod fetch_failure;
+mod in_flight;
 mod package;
 mod patch;
+mod proxy;
+mod store;
 mod types;
 
 pub use crate::core::{build_diff_tree, get_diff_content, whitespace_mode};
@@ -10,6 +16,7 @@ pub use crate::package::{
     unpack_archive, ArchiveSource, PyPiResponse, PyPiUrl,
 };
 pub use crate::patch::{build_patch, Patch};
+use crate::store::{PackageFiles, PackageStore};
 pub use crate::types::{DiffFileEntry, DiffStatus, FileMapEntry, FileType};
 use serde::Serialize;
 pub use similar::WhitespaceMode;
@@ -18,8 +25,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
-type PackageFiles = Rc<HashMap<String, FileMapEntry>>;
-
 #[derive(Clone)]
 struct ActiveDiff {
     from_key: String,
@@ -27,8 +32,7 @@ struct ActiveDiff {
 }
 
 thread_local! {
-    static EXTRACTION_CACHE: RefCell<HashMap<String, PackageFiles>> =
-        RefCell::new(HashMap::new());
+    static PACKAGES: Rc<PackageStore<JsValue>> = PackageStore::new();
     static ACTIVE_DIFF: RefCell<Option<ActiveDiff>> = const { RefCell::new(None) };
 }
 
@@ -42,15 +46,10 @@ async fn get_or_fetch_package(
     version: &str,
 ) -> Result<PackageFiles, JsValue> {
     let key = cache_key(registry, pkg, version);
-    if let Some(cached) = EXTRACTION_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
-        return Ok(cached);
-    }
-
-    let files = Rc::new(package::fetch_and_extract_package(registry, pkg, version).await?);
-    EXTRACTION_CACHE.with(|cache| {
-        cache.borrow_mut().insert(key, Rc::clone(&files));
-    });
-    Ok(files)
+    let (registry, pkg, version) = (registry.to_owned(), pkg.to_owned(), version.to_owned());
+    let fetch = async move { package::fetch_and_extract_package(&registry, &pkg, &version).await };
+    let packages = PACKAGES.with(Rc::clone);
+    packages.get_or_fetch(key, fetch).await
 }
 
 fn file_content<'a>(files: &'a HashMap<String, FileMapEntry>, path: &str) -> Option<&'a str> {
@@ -104,6 +103,11 @@ fn diff_from_cache(
 }
 
 #[wasm_bindgen]
+pub fn set_proxy_origin(origin: String) -> Result<(), JsValue> {
+    proxy::configure(&origin).map_err(|message| JsValue::from_str(&message))
+}
+
+#[wasm_bindgen]
 pub async fn prefetch_package(
     registry: String,
     pkg: String,
@@ -154,10 +158,10 @@ pub fn get_diff_for_path(
         .with(|state| state.borrow().clone())
         .ok_or_else(|| JsValue::from_str("No active diff context"))?;
 
-    let result = EXTRACTION_CACHE
-        .with(|cache| {
+    let result = PACKAGES
+        .with(|packages| {
             diff_from_cache(
-                &cache.borrow(),
+                &packages.extracted(),
                 &active.from_key,
                 &active.to_key,
                 &filename,
@@ -182,10 +186,10 @@ pub fn get_diff_for_comparison(
     let from_key = cache_key(&registry, &pkg, &from);
     let to_key = cache_key(&registry, &pkg, &to);
 
-    let result = EXTRACTION_CACHE
-        .with(|cache| {
+    let result = PACKAGES
+        .with(|packages| {
             diff_from_cache(
-                &cache.borrow(),
+                &packages.extracted(),
                 &from_key,
                 &to_key,
                 &filename,
