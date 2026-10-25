@@ -31,14 +31,51 @@ Turn the hook on once per clone with `git config core.hooksPath .githooks`. Do n
 
 ## Releasing
 
-1. Bump `version` in `Cargo.toml` (the only place it lives) and run `cargo check` so `Cargo.lock` follows. Commit as `chore(release): <version>`.
-2. Merge into `development`, then merge `development` into `main`.
-3. On `main`: `git tag v<version> && git push origin v<version>`. `release.yml` rejects a tag that differs from `Cargo.toml`, then publishes to npm.
+Every merge into `main` runs `release.yml`. It reads the Conventional Commits since the last `v*` tag and works out the next version from them. If there is one, it publishes the package to npm, pushes the tag `v<version>` and writes the GitHub release with notes and `diffpack_engine_bg.wasm` attached. Nothing is committed back to `main`, so `Cargo.toml` stays the only place the version lives and must already hold the new version when the merge lands.
+
+The crate stays on 0.x, so a breaking change moves the minor number, the way Cargo reads 0.x versions:
+
+| Commits since the last tag | Next version, from 0.5.0 |
+| :- | :- |
+| a breaking change: `!` after the type (`feat!:`), or a `BREAKING CHANGE:` footer | 0.6.0 |
+| `feat`, `fix`, `perf`, or a revert | 0.5.1 |
+| only `bench`, `build`, `chore`, `ci`, `docs`, `refactor`, `style` or `test` | no release |
+
+The rules live in `.releaserc.json`. To release:
+
+1. Find the version the commits call for. This simulates the merge into `main` in a throwaway clone and asks semantic-release, without publishing anything:
+
+   ```bash
+   cd "$(mktemp -d)" && git clone -q -b main https://github.com/philfreshman/diffpack-engine.git .
+   git merge -q --no-ff -m check origin/development
+   GITHUB_TOKEN=$(gh auth token) npx -y -p semantic-release@25 -p @semantic-release/exec@7 -p conventional-changelog-conventionalcommits@9 semantic-release --dry-run --no-ci
+   ```
+
+   Before the bump it fails with the version the commits call for. After the bump it prints that version and the release notes. With no releasable commits it says no new version is released, and there is nothing to bump.
+2. Set `version` in `Cargo.toml` to it and run `cargo check` so `Cargo.lock` follows. Commit as `chore(release): <version>`, open the pull request against `development` and merge it.
+3. Open a pull request from `development` to `main` and merge it with a merge commit. `release.yml` does the rest.
+4. diffpack-server then moves its `tag = "v<version>"` in `Cargo.toml` and `engine::VERSION` together. diffpack gets the new npm version from Renovate.
+
+`release.yml` builds `pkg/` with wasm-pack before anything else, so a build that fails stops the release before a tag exists. semantic-release then goes through these steps in order, and the first one that fails stops the rest:
+
+1. `.github/scripts/check-release-version.sh` compares the computed version with `Cargo.toml`. If they differ, the job fails and says which version the commits call for and what `Cargo.toml` says.
+2. `.github/scripts/publish-npm.sh` runs `npm publish --access public --provenance` from `pkg/`, unless that version is already on npm.
+3. semantic-release pushes the tag.
+4. semantic-release writes the GitHub release and uploads the `.wasm`.
+
+A failed release opens an issue in this repository. To recover:
+
+- Step 1 failed: nothing was published or tagged. Bump `Cargo.toml` to the version the error names in a `chore(release)` pull request to `development`, then merge `development` into `main` again.
+- The build or step 2 failed (for example an expired `NPM_TOKEN` secret): nothing was published or tagged. Fix the cause and re-run the job.
+- Step 3 failed: the version is on npm but has no tag. Re-run the job. Step 2 sees the version on npm and skips it, then the tag and the release follow.
+- Step 4 failed: the version is on npm and tagged, and a re-run releases nothing because semantic-release sees the tag. Create the release by hand with the `.wasm` from the npm tarball: `npm pack @philfreshman/diffpack-engine@<version> && tar -xzf philfreshman-diffpack-engine-<version>.tgz && gh release create v<version> --verify-tag --title v<version> --generate-notes package/diffpack_engine_bg.wasm`.
+
+npm never lets a version be published twice, so a broken release is fixed with a new version, not by publishing again.
 
 ## Git workflow
 
-- Branch from `development` and open PRs against `development`. Only `main` releases.
-- Use Conventional Commits (`feat:`, `fix:`, `docs:`, `chore(deps):`, …).
+- Branch from `development` and open PRs against `development`. `main` only takes merges from `development` (the `main source is development` check), and every merge into `main` may release.
+- Use Conventional Commits: `type(scope): description` with the type one of `bench`, `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style` or `test`, the scope optional, and `!` before the colon for a breaking change. The `conventional commits` check fails a pull request with any other commit subject. The type decides the next version, as "Releasing" describes.
 
 ## Code style
 
