@@ -1,0 +1,33 @@
+{
+	"$schema": "https://json.schemastore.org/semantic-release.json",
+	"branches": ["main"],
+	"tagFormat": "v${version}",
+	"plugins": [
+		[
+			"@semantic-release/commit-analyzer",
+			{
+				"preset": "conventionalcommits",
+				"releaseRules": [
+					{ "breaking": true, "release": "minor" },
+					{ "type": "feat", "release": "patch" }
+				]
+			}
+		],
+		["@semantic-release/release-notes-generator", { "preset": "conventionalcommits" }],
+		[
+			"@semantic-release/exec",
+			{
+				"verifyReleaseCmd": ".github/scripts/check-release-version.sh ${nextRelease.version}",
+				"prepareCmd": ".github/scripts/publish-npm.sh ${nextRelease.version}"
+			}
+		],
+		[
+			"@semantic-release/github",
+			{
+				"assets": [{ "path": "pkg/diffpack_engine_bg.wasm" }],
+				"successComment": false,
+				"releasedLabels": false
+			}
+		]
+	]
+}
