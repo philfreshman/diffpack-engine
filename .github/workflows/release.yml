@@ -14,6 +14,10 @@ permissions:
 env:
   # renovate: datasource=github-releases depName=wasm-bindgen/wasm-pack extractVersion=^v(?<version>.+)$
   WASM_PACK_VERSION: 0.15.0
+  # renovate: datasource=npm depName=@semantic-release/exec
+  SEMANTIC_RELEASE_EXEC_VERSION: 7
+  # renovate: datasource=npm depName=conventional-changelog-conventionalcommits
+  CONVENTIONALCOMMITS_PRESET_VERSION: 9
 
 jobs:
   release:
@@ -59,8 +63,8 @@ jobs:
         with:
           semantic_version: 25
           extra_plugins: |
-            @semantic-release/exec@7
-            conventional-changelog-conventionalcommits@9
+            @semantic-release/exec@${{ env.SEMANTIC_RELEASE_EXEC_VERSION }}
+            conventional-changelog-conventionalcommits@${{ env.CONVENTIONALCOMMITS_PRESET_VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
