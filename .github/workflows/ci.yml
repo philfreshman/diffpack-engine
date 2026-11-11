@@ -16,6 +16,10 @@ permissions:
 env:
   # renovate: datasource=github-releases depName=wasm-bindgen/wasm-pack extractVersion=^v(?<version>.+)$
   WASM_PACK_VERSION: 0.15.0
+  # renovate: datasource=crate depName=cargo-deny
+  CARGO_DENY_VERSION: 0.20.2
+  # renovate: datasource=crate depName=cargo-audit
+  CARGO_AUDIT_VERSION: 0.22.2
 
 jobs:
   commits:
@@ -43,9 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          components: rustfmt
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - run: cargo fmt --all --check
 
   clippy:
@@ -53,9 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          components: clippy
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -64,10 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
-          tool: cargo-deny
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
       - run: cargo deny --all-features check
 
   audit:
@@ -75,10 +78,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
-          tool: cargo-audit
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
       - run: cargo audit --deny warnings --no-yanked
 
   test:
@@ -86,7 +90,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test
 
@@ -96,9 +101,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
@@ -110,9 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
