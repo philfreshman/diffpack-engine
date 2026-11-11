@@ -16,6 +16,10 @@ permissions:
 env:
   # renovate: datasource=github-releases depName=wasm-bindgen/wasm-pack extractVersion=^v(?<version>.+)$
   WASM_PACK_VERSION: 0.15.0
+  # renovate: datasource=crate depName=cargo-deny
+  CARGO_DENY_VERSION: 0.20.2
+  # renovate: datasource=crate depName=cargo-audit
+  CARGO_AUDIT_VERSION: 0.22.2
 
 jobs:
   commits:
@@ -66,7 +70,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
-          tool: cargo-deny
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
       - run: cargo deny --all-features check
 
   audit:
@@ -78,7 +82,7 @@ jobs:
         run: rustup toolchain install --no-self-update
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
-          tool: cargo-audit
+          tool: cargo-audit@${{ env.CARGO_AUDIT_VERSION }}
       - run: cargo audit --deny warnings --no-yanked
 
   test:
