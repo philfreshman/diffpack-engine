@@ -26,6 +26,7 @@ Turn the hook on once per clone with `git config core.hooksPath .githooks`. Do n
 - In wasm, Composer goes through diffpack-proxy (`set_proxy_origin`, `src/proxy.rs`); native code uses the direct URLs. The proxy's HTTP contract is `../diffpack-proxy/docs/contract.md`.
 - A change here reaches no one until it is released and each consumer moves its pin (the npm version in diffpack, the `tag` and `engine::VERSION` in diffpack-server).
 - The release profile (`opt-level = 's'` with `lto`) was picked by measuring with `examples/bench.rs`: about half the compute time of `'z'` for roughly 70 KB more. Measure again before changing it.
+- `rust-toolchain.toml` pins the Rust version for CI and for local work alike, so the hook's clippy is CI's clippy. Renovate moves it 14 days after each Rust release. Don't switch CI back to a `stable` ref: a moving ref has no release date, so Renovate can never age it.
 - `WASM_PACK_VERSION` is pinned in both `ci.yml` and `release.yml`; keep the two equal. The wasm-bindgen crates (`wasm-bindgen*`, `js-sys`, `web-sys`, `serde-wasm-bindgen`) move together. `wasm-bindgen`, `wasm-bindgen-futures`, `js-sys`, `web-sys` and `wasm-bindgen-test` require exact versions of each other, so `Cargo.toml` pins them with `=`: Renovate then edits the pins and re-resolves the lock in one go. With plain ranges it moves each one alone with `cargo update --precise`, which always fails. Bump all five pins together.
 - `deny.toml` allows crates.io dependencies with permissive licences only, no git dependencies.
 
