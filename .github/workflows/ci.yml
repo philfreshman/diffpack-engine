@@ -14,6 +14,7 @@ permissions:
   contents: read
 
 env:
+  # renovate: datasource=github-releases depName=wasm-bindgen/wasm-pack extractVersion=^v(?<version>.+)$
   WASM_PACK_VERSION: 0.15.0
 
 jobs:

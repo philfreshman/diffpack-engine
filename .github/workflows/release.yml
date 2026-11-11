@@ -12,7 +12,10 @@ permissions:
   contents: read
 
 env:
+  # renovate: datasource=github-releases depName=wasm-bindgen/wasm-pack extractVersion=^v(?<version>.+)$
   WASM_PACK_VERSION: 0.15.0
+  # renovate: datasource=npm depName=@semantic-release/exec
+  SEMANTIC_RELEASE_EXEC_VERSION: 7
 
 jobs:
   release:
@@ -57,8 +60,10 @@ jobs:
         uses: cycjimmy/semantic-release-action@v8
         with:
           semantic_version: 25
+          # conventional-changelog-conventionalcommits is kept out of Renovate on purpose: its major must match the
+          # conventional-changelog-writer that the pinned semantic-release ships (semantic-release 25 ships writer 8, which needs preset 9).
           extra_plugins: |
-            @semantic-release/exec@7
+            @semantic-release/exec@${{ env.SEMANTIC_RELEASE_EXEC_VERSION }}
             conventional-changelog-conventionalcommits@9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
